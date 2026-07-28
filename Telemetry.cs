@@ -1283,6 +1283,20 @@ namespace Framesaver
               .Append(",\"removedTotal\":").Append(AICoreControllerUpdatePatch.RemovedTotal).Append('}');
 
             float elapsed = Mathf.Max(0.001f, Time.realtimeSinceStartup - _windowStart);
+
+            // The window's OWN duration, measured, not the configured one.
+            //
+            // Every per-window rate on this line divides by this quantity, and until now it was implicit:
+            // a reader assumed 60 because that is the default of `Window seconds`. That setting is
+            // live-editable and was not in `cfg`, so a mid-session edit silently changed the denominator
+            // of every rate after it with nothing in the data to say so - and a window closed early by a
+            // flush would do the same, which is why this is a hard prerequisite for the protocol keybind
+            // rather than a tidy-up alongside it.
+            //
+            // Measured rather than configured because a flushed partial window has the config's duration
+            // and not its own. Emitting the setting instead would be exactly the mistake this fixes.
+            Num(sb, "windowSec", elapsed);
+
             sb.Append(",\"gc\":{\"gen0\":").Append(_gen0 - _gen0Base)
               .Append(",\"allocMbPerSec\":").Append(Fmt(_allocatedBytes / (1024d * 1024d) / elapsed))
               .Append(",\"heapMb\":{\"avg\":").Append(Fmt(_heapMb.Average))
@@ -1315,7 +1329,13 @@ namespace Framesaver
             sb.Append(",\"endOfFrameFires\":").Append(PlayerLoopProfiler.EndOfFrameFires);
             sb.Append(",\"startOfFrameFires\":").Append(PlayerLoopProfiler.StartOfFrameFires);
 
-            sb.Append(",\"cfg\":{\"standBy\":").Append(Bool(Plugin.StandByEnabled.Value))
+            // windowSeconds is the SETTING; windowSec above is what this window actually lasted. Both,
+            // because a short measured window has two causes that need telling apart: a flush closed it
+            // early (intentional, and the line is still valid), or someone edited the setting mid-session
+            // (every rate before and after is on a different denominator, and comparability is broken).
+            // Same shape as null-versus-zero: one symptom, two meanings, so emit what discriminates them.
+            sb.Append(",\"cfg\":{\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value))
+              .Append(",\"standBy\":").Append(Bool(Plugin.StandByEnabled.Value))
               .Append(",\"leakFix\":").Append(Bool(Plugin.FixAgentLeak.Value))
               .Append(",\"brainPeriod\":").Append(Fmt(Plugin.BrainUpdatePeriod.Value))
               .Append(",\"fastAnim\":").Append(Bool(Plugin.ForceFastBodyAnimator.Value))
