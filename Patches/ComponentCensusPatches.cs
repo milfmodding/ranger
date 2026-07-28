@@ -38,9 +38,20 @@ namespace Framesaver.Patches
     /// </summary>
     internal static class Census
     {
-        /// <summary>Components per line. Raised from 512 when the enumeration widened to Component,
-        /// which newly admits every hit collider and ragdoll body.</summary>
-        private const int MaxComponents = 1024;
+        /// <summary>
+        /// Components per line. 512 originally; 1024 when the enumeration widened to Component, which
+        /// newly admits every hit collider and ragdoll body.
+        ///
+        /// 1024 was not enough either - `aliveControl` hit it in the first run that had two roots,
+        /// dropping 272 of 1,296. That line is the check on whether `alive` was contaminated, and a
+        /// truncated check compares a different set of components to the one it is checking. **The cap
+        /// silently converted the control into a second, incomparable sample.**
+        ///
+        /// 4096 is a blowup guard, not a working limit: the largest census yet is 1,296, and if
+        /// `dropped` is ever non-zero again that is a finding about the root, not a reason to raise
+        /// this again.
+        /// </summary>
+        private const int MaxComponents = 4096;
 
         private const double Dead10DelayMs = 10000d;
 
@@ -208,11 +219,10 @@ namespace Framesaver.Patches
                 // ControllerGameObject (Player.cs:31696) returns the weapon object itself rather than a
                 // component on it, so discovery does not presuppose what we are looking for. BSG uses the
                 // same object as a recursion root for exactly this purpose (Player.cs:28879).
-                List<string> rootNames = new List<string>(2);
-                List<int> rootCounts = new List<int>(2);
+                List<RootInfo> roots = new List<RootInfo>(2);
                 List<Component> keep = new List<Component>(512);
 
-                CollectRoot(player.gameObject, "Player", keep, rootNames, rootCounts);
+                CollectRoot(player.gameObject, "Player", keep, roots);
 
                 GameObject weapon = null;
                 try
@@ -225,7 +235,7 @@ namespace Framesaver.Patches
                     weapon = null;
                 }
 
-                CollectRoot(weapon, "ControllerGameObject", keep, rootNames, rootCounts);
+                CollectRoot(weapon, "ControllerGameObject", keep, roots);
 
                 // Sort BEFORE truncating. Unity's enumeration order is not guaranteed stable, so
                 // truncating first would keep a different arbitrary 1024 each run - the cap would make
@@ -246,27 +256,28 @@ namespace Framesaver.Patches
 
                 // Every root ATTEMPTED, including ones that resolved to null. A roots array listing only
                 // successes is a field whose absence carries meaning - the failure this exists to stop.
-                // [null, 0] says "we looked for a weapon and there wasn't one", which is a finding;
-                // omitting the entry says nothing and looks fine.
+                // A "path":null entry says "we looked for a weapon and there wasn't one", which is a
+                // finding; omitting the entry says nothing and looks fine.
+                //
+                // `path` exists because of a number nobody can read without it: the first two-root run
+                // had ControllerGameObject return 155 components on the subject and **1,053 on the
+                // control bot**, against 243 for that bot's whole player subtree. A weapon larger than
+                // the player carrying it is either a genuinely big prefab or a root that is not on the
+                // bot at all - and `_controllerObject` comes from AssetPoolObject, so "not on the bot"
+                // is a live possibility rather than a paranoid one. The path names which it is.
                 sb.Append(",\"roots\":[");
-                for (int i = 0; i < rootNames.Count; i++)
+                for (int i = 0; i < roots.Count; i++)
                 {
                     if (i > 0)
                     {
                         sb.Append(',');
                     }
 
-                    sb.Append('[');
-                    if (rootNames[i] == null)
-                    {
-                        sb.Append("null");
-                    }
-                    else
-                    {
-                        sb.Append('"').Append(Escape(rootNames[i])).Append('"');
-                    }
-
-                    sb.Append(',').Append(rootCounts[i]).Append(']');
+                    sb.Append("{\"label\":");
+                    AppendStr(sb, roots[i].Label);
+                    sb.Append(",\"path\":");
+                    AppendStr(sb, roots[i].Path);
+                    sb.Append(",\"n\":").Append(roots[i].Count).Append('}');
                 }
 
                 sb.Append(']');
@@ -303,19 +314,30 @@ namespace Framesaver.Patches
         /// and an unsorted list produces spurious diffs. Rows stay duplicated where types repeat, since
         /// the comparison is a multiset.
         /// </summary>
+        /// <summary>One enumeration root: what was asked for, where it turned out to live, and how many
+        /// components came from it. Recorded even when the root resolved to null.</summary>
+        private struct RootInfo
+        {
+            public string Label;
+            public string Path;
+            public int Count;
+        }
+
         /// <summary>
         /// Enumerates one root into the shared list and records what was attempted.
         ///
-        /// A null root is recorded as an attempt with a null name and a zero count, never skipped -
+        /// A null root is recorded as an attempt with a null path and a zero count, never skipped -
         /// "we looked and found nothing" and "we did not look" must stay distinguishable.
         /// </summary>
         private static void CollectRoot(GameObject root, string label, List<Component> into,
-                                        List<string> names, List<int> counts)
+                                        List<RootInfo> roots)
         {
+            RootInfo info = new RootInfo();
+            info.Label = label;
+
             if (root == null)
             {
-                names.Add(null);
-                counts.Add(0);
+                roots.Add(info);
                 return;
             }
 
@@ -334,8 +356,36 @@ namespace Framesaver.Patches
                 }
             }
 
-            names.Add(label);
-            counts.Add(added);
+            info.Path = PathOf(root.transform);
+            info.Count = added;
+            roots.Add(info);
+        }
+
+        /// <summary>Hierarchy path from the scene root, which is the only field that separates "this
+        /// bot's weapon prefab is genuinely large" from "this root is not on this bot".</summary>
+        private static string PathOf(Transform t)
+        {
+            StringBuilder sb = new StringBuilder(128);
+            sb.Append(t.name);
+
+            for (Transform p = t.parent; p != null; p = p.parent)
+            {
+                sb.Insert(0, '/').Insert(0, p.name);
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>A JSON string or a bare null - the distinction the roots array is built on.</summary>
+        private static void AppendStr(StringBuilder sb, string s)
+        {
+            if (s == null)
+            {
+                sb.Append("null");
+                return;
+            }
+
+            sb.Append('"').Append(Escape(s)).Append('"');
         }
 
         /// <summary>Owning GameObject, then type name - the order the spec fixes so two censuses of the
