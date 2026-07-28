@@ -552,7 +552,11 @@ namespace Framesaver
             //
             // null, not 0, when the subscription failed: a gap that genuinely measured zero and an
             // instrument that never armed must not look alike.
-            if (PlayerLoopProfiler.FrameGapArmed)
+            // null covers two distinct failures and both must not look like a measurement: the
+            // subscription never armed, or the EndOfFrame/StartOfFrame pairing was not 1:1 this frame.
+            // The second matters most - a drifted pairing spans several frames and reads as exactly the
+            // large gap this field exists to detect, so an unsure instrument must stay silent.
+            if (PlayerLoopProfiler.FrameGapArmed && PlayerLoopProfiler.GapValid)
             {
                 Num(sb, "endToStart", PlayerLoopProfiler.EndToStartMs);
             }
