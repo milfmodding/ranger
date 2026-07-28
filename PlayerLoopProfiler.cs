@@ -34,6 +34,76 @@ namespace Framesaver
 
         public static bool Installed { get; private set; }
 
+        // ---- Inter-frame gap -----------------------------------------------------------------------
+        //
+        // The eight top-level phases tile PlayerLoop(), and the residual is everything outside it. Delta
+        // localised the 165-402 ms family there: on all twelve non-GC instances every phase reads
+        // ordinary, including PostLateUpdate at 3.8-15.3 ms, so the time is not inside any of them.
+        //
+        // SPT already brackets the interval for us. CustomPlayerLoopSystemsInjector inserts EndOfFrame as
+        // the LAST subsystem of PostLateUpdate and StartOfFrame as the FIRST of EarlyUpdate, both as
+        // public static Action events on non-obfuscated types. So EndOfFrame -> StartOfFrame spans
+        // native-gap + TimeUpdate + Initialization of the following frame, and we already measure those
+        // two - subtraction gives the native gap.
+        //
+        // Deliberately emitted raw rather than pre-subtracted: this reports what was read, and the
+        // subtraction is analysis. Two event subscriptions, no Harmony patch, no obfuscated types.
+        private static long _endOfFrameAt;
+        private static double _endToStartMs;
+
+        /// <summary>
+        /// Wall time from the last subsystem of PostLateUpdate to the first of EarlyUpdate. Contains
+        /// TimeUpdate and Initialization, which are measured separately - subtract for the native gap.
+        /// Zero until the first full frame boundary, and zero if the subscription failed.
+        /// </summary>
+        public static double EndToStartMs
+        {
+            get { return _endToStartMs; }
+        }
+
+        /// <summary>True when both events were subscribed. Reported so a null reading is distinguishable
+        /// from a zero one - the failure this project keeps having to make visible.</summary>
+        public static bool FrameGapArmed { get; private set; }
+
+        /// <summary>
+        /// Subscribes the inter-frame bracket.
+        ///
+        /// Separate from Install() and separately guarded: these are event subscriptions rather than
+        /// Harmony registrations, so Plugin.TryEnable does not cover them and a resolution failure would
+        /// propagate out of Awake and drop everything after it - the same cascade TryEnable exists to
+        /// stop. Called once; there is no unsubscribe because the plugin lives for the process.
+        /// </summary>
+        public static void ArmFrameGap()
+        {
+            try
+            {
+                CustomPlayerLoopSystem.EndOfFrame.OnUpdate += OnEndOfFrame;
+                CustomPlayerLoopSystem.StartOfFrame.OnUpdate += OnStartOfFrame;
+                FrameGapArmed = true;
+            }
+            catch (Exception e)
+            {
+                FrameGapArmed = false;
+                Plugin.LogSource.LogWarning("Framesaver: inter-frame gap not armed - " + e.Message
+                                            + ". endToStart will read null.");
+            }
+        }
+
+        private static void OnEndOfFrame()
+        {
+            _endOfFrameAt = Stopwatch.GetTimestamp();
+        }
+
+        private static void OnStartOfFrame()
+        {
+            if (_endOfFrameAt == 0L)
+            {
+                return;
+            }
+
+            _endToStartMs = (Stopwatch.GetTimestamp() - _endOfFrameAt) * 1000d / Stopwatch.Frequency;
+        }
+
         public static string[] PhaseNames
         {
             get { return _names; }
