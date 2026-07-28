@@ -64,6 +64,19 @@ namespace Framesaver
         private readonly List<double> _gameUpdateSamples = new List<double>(8192);
         private readonly List<double> _frameSamples = new List<double>(8192);
 
+        // Brains ticked, summed over the window rather than read once at flush.
+        //
+        // `LastBrainsTicked` is overwritten every frame and its slicing value is `perFrame`, which divides
+        // by `Time.deltaTime` - so a slow frame ticks MORE brains. Sampling it once per window would
+        // correlate the measurement with frame time, which is the quantity the A/B is testing. Summing
+        // removes the correlation and keeps the counts re-derivable.
+        //
+        // `_liveSum` exists so the ratio has a matching denominator. Dividing a window sum by the
+        // last frame's `live` would mix two populations, and the roster changes across a window.
+        // Both are divided by `n`, which is the frame count these were accumulated under.
+        private long _tickedSum;
+        private long _liveSum;
+
         /// <summary>Which regime a window's numbers came from. Menu is only entered once sampling has begun.</summary>
         private enum SessionState
         {
@@ -931,6 +944,8 @@ namespace Framesaver
             {
                 _gameUpdateSamples.Add(gameUpdate);
                 _frameSamples.Add(frameMs);
+                _tickedSum += AICoreControllerUpdatePatch.LastBrainsTicked;
+                _liveSum += AICoreControllerUpdatePatch.LiveAgents;
             }
 
             _periodSamples++;
@@ -1291,9 +1306,22 @@ namespace Framesaver
               .Append(",\"total\":").Append(awake + asleep)
               .Append(",\"animCulled\":").Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame).Append('}');
 
+            // `slicing` is the EFFECTIVE state, not the requested one, and it is the same expression the
+            // patch branches on at AICoreControllerUpdatePatch.cs:64 rather than a re-derivation of it.
+            // `cfg.brainPeriod` already reports what was asked for, and the failure this closes is the two
+            // disagreeing silently: BigBrain arrives as a SAIN dependency, ModCompat suppresses slicing, the
+            // arm reads as applied, the behaviour is vanilla, and the null reads as "the lever does nothing".
+            //
+            // `tickedSum` / `n` is brains per frame; `tickedSum` / `liveSum` is the fraction of the roster
+            // ticked per frame, which is the quantity that predicts frame time. Sums rather than a ratio
+            // because a ratio cannot be re-derived and cannot be pooled across windows.
+            bool slicing = Plugin.BrainUpdatePeriod.Value > 0f && !ModCompat.SuppressSlicing;
             sb.Append(",\"agents\":{\"live\":").Append(AICoreControllerUpdatePatch.LiveAgents)
               .Append(",\"pendingRemoval\":").Append(AICoreControllerUpdatePatch.PendingRemoval)
-              .Append(",\"removedTotal\":").Append(AICoreControllerUpdatePatch.RemovedTotal).Append('}');
+              .Append(",\"removedTotal\":").Append(AICoreControllerUpdatePatch.RemovedTotal)
+              .Append(",\"slicing\":").Append(slicing ? "true" : "false")
+              .Append(",\"tickedSum\":").Append(_tickedSum)
+              .Append(",\"liveSum\":").Append(_liveSum).Append('}');
 
             float elapsed = Mathf.Max(0.001f, Time.realtimeSinceStartup - _windowStart);
 
@@ -1706,6 +1734,8 @@ namespace Framesaver
             _heapMb.Reset();
             _gameUpdateSamples.Clear();
             _frameSamples.Clear();
+            _tickedSum = 0L;
+            _liveSum = 0L;
             _allocatedBytes = 0d;
             _gen0Base = _gen0;
             _windowStart = Time.realtimeSinceStartup;
