@@ -62,10 +62,39 @@ namespace Framesaver
         private static int _endCount;
         private static bool _gapValid;
 
+        // Per-window fire counts. The guard makes an unsure frame silent, which is right - but silence
+        // and success look identical in the output, so drift stays invisible. These must be equal to
+        // within 1 (the window boundary); a divergence means every endToStart in that window is suspect,
+        // readable off the data rather than inferred from whether the injector could have re-run.
+        private static int _endFires;
+        private static int _startFires;
+
+        public static int EndOfFrameFires
+        {
+            get { return _endFires; }
+        }
+
+        public static int StartOfFrameFires
+        {
+            get { return _startFires; }
+        }
+
+        public static void ResetFrameGapCounters()
+        {
+            _endFires = 0;
+            _startFires = 0;
+        }
+
         /// <summary>
-        /// Wall time from the last subsystem of PostLateUpdate to the first of EarlyUpdate. Contains
-        /// TimeUpdate and Initialization, which are measured separately - subtract for the native gap.
-        /// Zero until the first full frame boundary, and zero if the subscription failed.
+        /// Wall time from the last subsystem of PostLateUpdate to the first of EarlyUpdate.
+        ///
+        /// **The raw value is never the answer.** It CONTAINS TimeUpdate and Initialization, so it reads
+        /// 74-128 ms on the TimeUpdate-dominant collection frames as well as on a native block, and large
+        /// for anything else that stalls in that interval. Only `endToStart - TimeUpdate - Initialization`
+        /// distinguishes them, and both subtrahends are on the same line.
+        ///
+        /// Telemetry emits null - not this value - when the subscription failed or the frame's pairing
+        /// was not 1:1, so a caller reading zero here is reading a genuine zero.
         /// </summary>
         public static double EndToStartMs
         {
@@ -111,6 +140,7 @@ namespace Framesaver
         {
             _endOfFrameAt = Stopwatch.GetTimestamp();
             _endCount++;
+            _endFires++;
         }
 
         private static void OnStartOfFrame()
@@ -118,6 +148,7 @@ namespace Framesaver
             // Exactly one EndOfFrame since the previous StartOfFrame is the only case where the span is
             // one frame boundary. Zero means EndOfFrame did not fire; more than one means the span covers
             // several frames and would read as a stall that never happened.
+            _startFires++;
             _gapValid = _endCount == 1;
             _endCount = 0;
 
