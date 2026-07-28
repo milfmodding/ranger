@@ -51,6 +51,17 @@ namespace Framesaver
         private static long _endOfFrameAt;
         private static double _endToStartMs;
 
+        // Pairing guard. The bracket assumes EndOfFrame and StartOfFrame fire exactly once each, in that
+        // order, every frame. If the injector is re-run, a frame is skipped, or the player loop is
+        // rewritten mid-session, the pairing drifts and the span silently covers more than one frame -
+        // producing a large reading indistinguishable from the 165-402 ms family this exists to find.
+        //
+        // An instrument whose failure mode manufactures its own target cannot be allowed to report a
+        // number it is unsure of. Counting EndOfFrame calls between consecutive StartOfFrame calls makes
+        // the assumption checkable per frame: exactly one is valid, anything else emits null.
+        private static int _endCount;
+        private static bool _gapValid;
+
         /// <summary>
         /// Wall time from the last subsystem of PostLateUpdate to the first of EarlyUpdate. Contains
         /// TimeUpdate and Initialization, which are measured separately - subtract for the native gap.
@@ -59,6 +70,13 @@ namespace Framesaver
         public static double EndToStartMs
         {
             get { return _endToStartMs; }
+        }
+
+        /// <summary>False when the last frame's EndOfFrame/StartOfFrame pairing was not exactly 1:1, so
+        /// the span cannot be trusted to be one frame boundary. Emit null, never the number.</summary>
+        public static bool GapValid
+        {
+            get { return _gapValid; }
         }
 
         /// <summary>True when both events were subscribed. Reported so a null reading is distinguishable
@@ -92,11 +110,18 @@ namespace Framesaver
         private static void OnEndOfFrame()
         {
             _endOfFrameAt = Stopwatch.GetTimestamp();
+            _endCount++;
         }
 
         private static void OnStartOfFrame()
         {
-            if (_endOfFrameAt == 0L)
+            // Exactly one EndOfFrame since the previous StartOfFrame is the only case where the span is
+            // one frame boundary. Zero means EndOfFrame did not fire; more than one means the span covers
+            // several frames and would read as a stall that never happened.
+            _gapValid = _endCount == 1;
+            _endCount = 0;
+
+            if (!_gapValid)
             {
                 return;
             }
