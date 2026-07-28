@@ -214,6 +214,21 @@ namespace Framesaver
         private Vector3 _posMax;
         private int _posSamples;
 
+        // Look accumulators. Separate sample counter from _posSamples deliberately: rotation is read
+        // through a different property and can fail on its own, and a shared counter would make a
+        // failed look block indistinguishable from a held view.
+        private int _lookSamples;
+        private float _lastYaw;
+        private float _lastPitch;
+        private double _yawCum;
+        private double _pitchCum;
+        private double _yawMin;
+        private double _yawMax;
+        private double _pitchMin;
+        private double _pitchMax;
+        private double _yawSwept;
+        private double _pitchSwept;
+
         /// <summary>
         /// GameWorld.LocationId for the raid currently being sampled, and a 1-based counter of raids since
         /// the game launched. One log file spans every raid of a session, so without these two there is no
@@ -426,6 +441,8 @@ namespace Framesaver
                 return;
             }
 
+            SampleLook(player);
+
             Vector3 p = player.Position;
 
             if (_posSamples == 0)
@@ -449,6 +466,89 @@ namespace Framesaver
         }
 
         /// <summary>
+        /// Accumulates where the player looked. One property read per frame - Player.Rotation is
+        /// (yaw, pitch) in one Vector2, so this costs the same as either axis alone.
+        ///
+        /// Exists because Protocol B holds the view fixed and varies draw calls, and the log could not
+        /// show the view was actually held. The stand-in was `drawCalls.max / .avg` - which is circular
+        /// for that experiment specifically, since draw calls are the variable being manipulated:
+        /// using their stability to certify the view was held uses the stability of the thing being
+        /// varied to certify you held the thing that varies it.
+        ///
+        /// **Yaw wraps and raw min/max is a trap.** A view held near the wrap point produces samples at
+        /// 359.9 and 0.1, whose min/max spans the entire circle - a held view reported as a full sweep,
+        /// which is precisely the reading this exists to make trustworthy. So both axes accumulate an
+        /// *unwrapped* angle relative to the first sample: each frame's delta is folded into
+        /// (-180, 180] before being added. Range and sweep are then both wrap-safe, and `range` means
+        /// angular extent rather than "largest value seen minus smallest".
+        ///
+        /// `swept` is the angular analogue of `dist` and answers the question directly: it sums absolute
+        /// per-frame change, so a look away and back still reads as movement where a range would call it
+        /// stationary.
+        /// </summary>
+        private void SampleLook(Player player)
+        {
+            Vector2 r;
+            try
+            {
+                r = player.Rotation;
+            }
+            catch (Exception)
+            {
+                // Leave _lookSamples at 0 so the block emits null rather than a held-view-looking zero.
+                return;
+            }
+
+            if (_lookSamples == 0)
+            {
+                _yawCum = 0d;
+                _pitchCum = 0d;
+                _yawMin = 0d;
+                _yawMax = 0d;
+                _pitchMin = 0d;
+                _pitchMax = 0d;
+                _yawSwept = 0d;
+                _pitchSwept = 0d;
+            }
+            else
+            {
+                double dYaw = Unwrap(r.x - _lastYaw);
+                double dPitch = Unwrap(r.y - _lastPitch);
+
+                _yawCum += dYaw;
+                _pitchCum += dPitch;
+                _yawSwept += dYaw < 0d ? -dYaw : dYaw;
+                _pitchSwept += dPitch < 0d ? -dPitch : dPitch;
+
+                if (_yawCum < _yawMin) { _yawMin = _yawCum; }
+                if (_yawCum > _yawMax) { _yawMax = _yawCum; }
+                if (_pitchCum < _pitchMin) { _pitchMin = _pitchCum; }
+                if (_pitchCum > _pitchMax) { _pitchMax = _pitchCum; }
+            }
+
+            _lastYaw = r.x;
+            _lastPitch = r.y;
+            _lookSamples++;
+        }
+
+        /// <summary>Folds a raw angular difference into (-180, 180], so 359.9 -> 0.1 reads as +0.2
+        /// rather than -359.8. The loops handle any number of wraps without assuming one.</summary>
+        private static double Unwrap(double degrees)
+        {
+            while (degrees > 180d)
+            {
+                degrees -= 360d;
+            }
+
+            while (degrees <= -180d)
+            {
+                degrees += 360d;
+            }
+
+            return degrees;
+        }
+
+        /// <summary>
         /// Emits the window's movement, or explicit nulls when no player was ever sampled - a teardown
         /// window must be visibly a teardown window rather than a gap.
         /// </summary>
@@ -467,6 +567,34 @@ namespace Framesaver
             sb.Append(",\"z\":[").Append(Fmt(_posMin.z)).Append(',').Append(Fmt(_posMax.z)).Append(']');
             sb.Append(",\"end\":[").Append(Fmt(_lastPos.x)).Append(',').Append(Fmt(_lastPos.y))
               .Append(',').Append(Fmt(_lastPos.z)).Append(']');
+            AppendLook(sb);
+            sb.Append('}');
+        }
+
+        /// <summary>
+        /// The look block, nested in `pos`.
+        ///
+        /// **Null, never zero, when nothing was sampled.** A held view and a field that failed to read
+        /// both produce zero variance, and the whole point of this block is to certify a held view - so
+        /// the two must not be spelled the same. That is the `proc` precedent, which published zeros for
+        /// a day that meant "could not read".
+        ///
+        /// `range` is [min, max] of the unwrapped angle relative to the first sample of the window, so
+        /// max - min is angular extent in degrees. `swept` is total absolute change.
+        /// </summary>
+        private void AppendLook(StringBuilder sb)
+        {
+            if (_lookSamples == 0)
+            {
+                sb.Append(",\"look\":null");
+                return;
+            }
+
+            sb.Append(",\"look\":{\"samples\":").Append(_lookSamples);
+            sb.Append(",\"yaw\":{\"range\":[").Append(Fmt(_yawMin)).Append(',').Append(Fmt(_yawMax))
+              .Append("],\"swept\":").Append(Fmt(_yawSwept)).Append('}');
+            sb.Append(",\"pitch\":{\"range\":[").Append(Fmt(_pitchMin)).Append(',').Append(Fmt(_pitchMax))
+              .Append("],\"swept\":").Append(Fmt(_pitchSwept)).Append('}');
             sb.Append('}');
         }
 
@@ -1444,6 +1572,10 @@ namespace Framesaver
             // spurious jump at every window boundary from re-seeding against an unset origin.
             _distance = 0d;
             _posSamples = 0;
+            // _lastYaw/_lastPitch deliberately survive, like _lastPos: re-seeding would add a spurious
+            // delta at every window boundary. _lookSamples = 0 re-bases the cumulative angle to the
+            // first sample of the new window, which is what makes `range` per-window.
+            _lookSamples = 0;
             _negResidualFrames = 0;
             _negResidualWorstMs = 0d;
             _negResidualSumMs = 0d;
