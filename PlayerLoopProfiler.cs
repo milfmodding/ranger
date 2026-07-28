@@ -109,6 +109,24 @@ namespace Framesaver
             get { return _names; }
         }
 
+        /// <summary>
+        /// The phases actually expanded, resolved at Install().
+        ///
+        /// On the header because the setting has never been recorded anywhere, and under a blocklist that
+        /// becomes unrecoverable: a *blocked* phase and a phase whose children all fall under the 0.5 ms
+        /// drop threshold emit byte-identical output. Under the old allowlist the setting could be
+        /// inferred from which children appeared; a blocklist deletes that positive trace.
+        ///
+        /// The resolved list rather than the raw setting, for the `animCulled` reason - report the
+        /// effect, not the intent. It also survives a mistyped entry, which the raw string would not.
+        /// </summary>
+        private static string[] _expandedPhases = new string[0];
+
+        public static string[] ExpandedPhases
+        {
+            get { return _expandedPhases; }
+        }
+
         /// <summary>Per-phase milliseconds for the frame just completed. Index matches PhaseNames.</summary>
         public static double[] Snapshot
         {
@@ -179,6 +197,7 @@ namespace Framesaver
                 }
 
                 LogExpansion(expandedNames, topLevel);
+                _expandedPhases = expandedNames.ToArray();
 
                 _names = names.ToArray();
                 _starts = new long[_names.Length];
