@@ -1037,6 +1037,24 @@ namespace Framesaver
                 sb.Append(",\"endToStart\":null");
             }
 
+            // endToLatch closes the same gap at the frame boundary, so it pairs with `period` and
+            // `unaccounted` on THIS line instead of the previous one. See PlayerLoopProfiler.
+            //
+            // **Both are emitted deliberately, for one run only.** endToStart is superseded and its
+            // three-term identity is a registered prediction - replacing it outright would make that
+            // prediction unevaluable and remove the only way to show the fix worked. This is the same
+            // argument as shipping the boundary latch paired with the counters that prove it: a silent
+            // regression and a fix look identical without the thing being replaced still present.
+            // Drop endToStart once endToLatch is validated against it.
+            if (PlayerLoopProfiler.FrameGapArmed && PlayerLoopProfiler.LatchGapValid)
+            {
+                Num(sb, "endToLatch", PlayerLoopProfiler.EndToLatchMs);
+            }
+            else
+            {
+                sb.Append(",\"endToLatch\":null");
+            }
+
             double accounted = 0d;
             if (PlayerLoopProfiler.Installed)
             {
