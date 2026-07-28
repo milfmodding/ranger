@@ -595,6 +595,12 @@ namespace Framesaver
         private double _frameOverPeriodWorstMs;
         private double _frameOverPeriodSumMs;
 
+        // Eligible-frame denominator and the boundary-miss count. Both exist so a zero is readable:
+        // negResidualFrames is zero by construction once the latch lands, and without these a broken
+        // instrument produces the same zero as a working one.
+        private int _clockResidualFrames;
+        private int _boundaryMissedFrames;
+
         /// <summary>
         /// Counts the two clock-disagreement signatures on EVERY frame, not just spike lines.
         ///
@@ -644,6 +650,13 @@ namespace Framesaver
             {
                 return;
             }
+
+            // Frames on which the residual test actually ran. Gamma's, and it is not merely a denominator:
+            // once the boundary latch makes negResidualFrames zero by construction, a zero from the
+            // assertion holding and a zero from this method returning early are identical in the output.
+            // The two guards above gate different counters - periodMs <= 0 skips both, !Installed skips
+            // only the residual half - so `frames` on the line is the denominator of neither.
+            _clockResidualFrames++;
 
             string[] names = PlayerLoopProfiler.PhaseNames;
             double[] phase = PlayerLoopProfiler.Snapshot;
@@ -747,7 +760,9 @@ namespace Framesaver
 
             if (PlayerLoopProfiler.Installed)
             {
-                PlayerLoopProfiler.ReadAndReset();
+                // ReadAndReset moved to the frame-boundary marker, which latches the snapshot and the
+                // period timestamp together. Calling it here would take a second snapshot mid-Update and
+                // reintroduce the split this change exists to remove.
                 double[] phase = PlayerLoopProfiler.Snapshot;
                 if (_phases == null || _phases.Length != phase.Length)
                 {
@@ -778,12 +793,31 @@ namespace Framesaver
 
             _periodSamples++;
 
-            // Wall time covered by the phase accumulators just read, measured directly rather than taken from
-            // GameFrameMeasurer. The game's counter reports the *previous* frame, so pairing it with this
-            // frame's phases produced residuals that were off by a frame - including negative ones.
-            long now = Stopwatch.GetTimestamp();
-            double periodMs = _lastSampleTicks == 0L ? 0d : AiTiming.ToMs(now - _lastSampleTicks);
-            _lastSampleTicks = now;
+            // Wall time covered by the phase accumulators just read, latched at the frame boundary by the
+            // same delegate that took the snapshot. Taking it here instead - inside the Update phase -
+            // is what split a stall across two lines and drove `unaccounted` negative.
+            double periodMs;
+            if (PlayerLoopProfiler.Installed)
+            {
+                if (!PlayerLoopProfiler.ConsumeFrameBoundary(out periodMs))
+                {
+                    // Markers dropped since the previous sample. Emitting the stale latch would repeat one
+                    // frame's period indefinitely and look exactly like a healthy run, so this frame
+                    // contributes to nothing - not the counters, not a spike line, not the denominator.
+                    _boundaryMissedFrames++;
+                    return;
+                }
+            }
+            else
+            {
+                // No profiler, so there are no phases and no residual to compute - but `period` still
+                // drives the spike lines, which are a core instrument and must not be lost with it.
+                // Measuring it here reintroduces the mid-Update split, which costs nothing when there
+                // are no phase totals to be split against.
+                long now = Stopwatch.GetTimestamp();
+                periodMs = _lastSampleTicks == 0L ? 0d : AiTiming.ToMs(now - _lastSampleTicks);
+                _lastSampleTicks = now;
+            }
 
             CountClockDisagreement(periodMs, frameMs);
 
@@ -1126,6 +1160,9 @@ namespace Framesaver
             sb.Append(",\"frameOverPeriodFrames\":").Append(_frameOverPeriodFrames);
             sb.Append(",\"frameOverPeriodWorstMs\":").Append(Fmt(_frameOverPeriodWorstMs));
             sb.Append(",\"frameOverPeriodSumMs\":").Append(Fmt(_frameOverPeriodSumMs));
+            sb.Append(",\"clockResidualFrames\":").Append(_clockResidualFrames);
+            sb.Append(",\"boundaryMissedFrames\":").Append(_boundaryMissedFrames);
+            sb.Append(",\"boundaryFires\":").Append(PlayerLoopProfiler.BoundaryFires);
 
             sb.Append(",\"frameGapArmed\":").Append(Bool(PlayerLoopProfiler.FrameGapArmed));
             sb.Append(",\"endOfFrameFires\":").Append(PlayerLoopProfiler.EndOfFrameFires);
@@ -1412,6 +1449,9 @@ namespace Framesaver
             _frameOverPeriodFrames = 0;
             _frameOverPeriodWorstMs = 0d;
             _frameOverPeriodSumMs = 0d;
+            _clockResidualFrames = 0;
+            _boundaryMissedFrames = 0;
+            PlayerLoopProfiler.ResetBoundaryCounters();
             PlayerLoopProfiler.ResetFrameGapCounters();
 
             _frame.Reset();
