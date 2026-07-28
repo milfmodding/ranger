@@ -545,6 +545,22 @@ namespace Framesaver
             Num(sb, "period", periodMs);
             Num(sb, "frame", frameMs);
 
+            // Wall time from PostLateUpdate's last subsystem to EarlyUpdate's first - i.e. outside
+            // PlayerLoop() entirely. Contains TimeUpdate and Initialization, both measured separately in
+            // `phases`, so the native inter-frame gap is this minus those two. Raw rather than
+            // pre-subtracted, so the line reports what was read.
+            //
+            // null, not 0, when the subscription failed: a gap that genuinely measured zero and an
+            // instrument that never armed must not look alike.
+            if (PlayerLoopProfiler.FrameGapArmed)
+            {
+                Num(sb, "endToStart", PlayerLoopProfiler.EndToStartMs);
+            }
+            else
+            {
+                sb.Append(",\"endToStart\":null");
+            }
+
             double accounted = 0d;
             if (PlayerLoopProfiler.Installed)
             {
