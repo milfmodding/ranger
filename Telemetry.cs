@@ -655,7 +655,8 @@ namespace Framesaver
             // once the boundary latch makes negResidualFrames zero by construction, a zero from the
             // assertion holding and a zero from this method returning early are identical in the output.
             // The two guards above gate different counters - periodMs <= 0 skips both, !Installed skips
-            // only the residual half - so `frames` on the line is the denominator of neither.
+            // only the residual half - so `frames` on the line is the denominator of neither, which is
+            // why this counter exists. Read the rate as negResidualFrames / clockResidualFrames.
             _clockResidualFrames++;
 
             string[] names = PlayerLoopProfiler.PhaseNames;
