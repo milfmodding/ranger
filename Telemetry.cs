@@ -891,6 +891,26 @@ namespace Framesaver
             sb.Append(",\"qpcFrequency\":").Append(GpuTelemetry.QpcFrequency());
             Num(sb, "spikeEventMs", Plugin.SpikeEventMs.Value);
 
+            // Which phases were actually expanded, resolved rather than as configured.
+            //
+            // `Do not expand phases` is a blocklist, and a blocklist leaves no positive trace: a blocked
+            // phase and a phase whose children all fall under the 0.5 ms drop threshold produce identical
+            // output. Under the old allowlist the setting could be recovered from a log by seeing which
+            // children appeared - that inference is gone, so the resolved set has to be stated.
+            sb.Append(",\"expandedPhases\":[");
+            string[] expanded = PlayerLoopProfiler.ExpandedPhases;
+            for (int i = 0; i < expanded.Length; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append('"').Append(Escape(expanded[i])).Append('"');
+            }
+
+            sb.Append(']');
+
             // Whether Unity's incremental collector is available decides the shape of any GC fix. The PMC
             // bot-generation callback ran 21 stop-the-world collections in 16.4s; if the collector is
             // incremental we can tune the time slice so those become many small ones, which is the actual
