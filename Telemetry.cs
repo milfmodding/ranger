@@ -1381,6 +1381,15 @@ namespace Framesaver
             // than `windowSec` would suggest for a full one - and nobody should average it in with whole
             // windows. Marked rather than suppressed, because the contaminated interval is exactly the one
             // an analyst may want to look at deliberately.
+            //
+            // On that line the labels and the measurements describe DIFFERENT ARMS. `Advance()` applies the
+            // step's config and increments the step before the flush at the call site, and this method reads
+            // config live - so `protocol.arm`, `protocol.step`, `cfg` and `agents.slicing` all name the arm
+            // ABOUT TO START while every accumulated number describes the arm that just ENDED. Being short
+            // is the weaker reason to exclude it; this is the stronger one, and `slicing` is exactly the
+            // field a reader would trust as ground truth. Beta caught it. The fix is to flush before
+            // advancing, which needs a precondition ProtocolRunner can expose but does not yet - re-deriving
+            // it here would be the same silent-drift shape the protocol refuses unknown keys to avoid.
             if (ProtocolRunner.Loaded)
             {
                 sb.Append(",\"protocol\":{\"name\":\"").Append(Escape(ProtocolRunner.Name))
