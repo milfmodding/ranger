@@ -242,10 +242,14 @@ namespace Framesaver
                     names.Add(phaseName);
                     topLevel.Add(phaseName);
 
+                    // Stripped here as well as in the wrapping pass below. The two passes must walk the
+                    // same list or the names desynchronise from the slots they label - on a reinstall an
+                    // unstripped first pass would count our own markers as children and every phase after
+                    // the first would be named wrongly.
                     if (ShouldExpand(phaseName) && phase.subSystemList != null)
                     {
                         expandedNames.Add(phaseName);
-                        foreach (PlayerLoopSystem child in phase.subSystemList)
+                        foreach (PlayerLoopSystem child in StripMarkers(phase.subSystemList))
                         {
                             names.Add(phaseName + "/" + (child.type != null ? child.type.Name : "?"));
                         }
@@ -271,7 +275,7 @@ namespace Framesaver
                     int phaseSlot = slot;
                     slot++;
 
-                    PlayerLoopSystem[] inner = phase.subSystemList ?? new PlayerLoopSystem[0];
+                    PlayerLoopSystem[] inner = StripMarkers(phase.subSystemList);
 
                     // Expand the children of the phase under investigation, innermost first, so the parent's
                     // own markers still bracket everything.
@@ -291,7 +295,9 @@ namespace Framesaver
                     }
 
                     PlayerLoopSystem[] wrapped = new PlayerLoopSystem[inner.Length + 2];
-                    wrapped[0] = MakeBegin(phaseSlot);
+                    // Phase 0's Begin is the first thing that runs in a frame, so it is the frame boundary
+                    // and it carries the snapshot latch. See MakeFrameBoundaryBegin.
+                    wrapped[0] = i == 0 ? MakeFrameBoundaryBegin(phaseSlot) : MakeBegin(phaseSlot);
                     Array.Copy(inner, 0, wrapped, 1, inner.Length);
                     wrapped[wrapped.Length - 1] = MakeEnd(phaseSlot);
 
@@ -342,21 +348,31 @@ namespace Framesaver
             try
             {
                 PlayerLoopSystem root = PlayerLoop.GetCurrentPlayerLoop();
-                if (root.subSystemList == null)
+                if (root.subSystemList == null || root.subSystemList.Length == 0)
                 {
                     return false;
                 }
 
+                // EVERY top-level phase, not any. The previous version returned true as soon as one phase
+                // still had its marker, so a mod clobbering seven of eight triggered no reinstall and the
+                // seven then reported 0 ms - which CORPUS.md instructs readers to interpret as "below the
+                // 0.5 ms drop threshold". A clobbered phase and a fast phase were indistinguishable in the
+                // output, silently, in data we have already drawn conclusions from.
+                //
+                // It also guards the frame boundary specifically: the latch is only on the frame boundary
+                // while subSystemList[0].subSystemList[0] is ours, and a mod prepending to phase 0 would
+                // otherwise leave the old check satisfied while moving the latch off the boundary - so the
+                // assertion built on it would pass while measuring the wrong interval.
                 foreach (PlayerLoopSystem phase in root.subSystemList)
                 {
                     PlayerLoopSystem[] inner = phase.subSystemList;
-                    if (inner != null && inner.Length > 0 && inner[0].type == typeof(BeginMarker))
+                    if (inner == null || inner.Length == 0 || inner[0].type != typeof(BeginMarker))
                     {
-                        return true;
+                        return false;
                     }
                 }
 
-                return false;
+                return true;
             }
             catch (Exception)
             {
@@ -438,6 +454,121 @@ namespace Framesaver
                                          ? " - blocklist entries matching no phase: "
                                            + string.Join(", ", unmatched.ToArray())
                                          : ""));
+        }
+
+        // ---- Frame boundary ------------------------------------------------------------------------
+        //
+        // The snapshot and the period timestamp must be taken at the SAME instant, and that instant must
+        // be a real frame boundary. Both were previously taken inside Telemetry.Sample(), which runs in
+        // ScriptRunBehaviourUpdate - inside the Update phase, between its Begin and End markers. A stall
+        // in Update before Sample() therefore landed in `period` on one line and in the Update phase total
+        // on the next: positive residual, then negative. No clock was wrong; the three measurements simply
+        // covered different intervals.
+        //
+        // Moving only the snapshot to SPT's StartOfFrame event would have made it worse, not better - the
+        // two brackets would then sit on genuinely different intervals and the residual would be unbounded
+        // in both signs. StartOfFrame is also not the frame boundary: CustomPlayerLoopSystemsInjector
+        // inserts it First into EarlyUpdate and then inserts FrameCounter First after it, so FrameCounter
+        // runs ahead of it.
+        //
+        // Phase 0's Begin marker is the frame boundary by definition, whatever that phase happens to be
+        // and regardless of what anyone injected. Latching both here makes `accounted <= period` an
+        // identity: the eight phase intervals all open and close inside [begin0(N), begin0(N+1)), so they
+        // are disjoint sub-intervals of the period. negResidualFrames is then an assertion rather than a
+        // measurement, and any non-zero value is an instrument defect.
+        private static long _boundaryTicks;
+        private static double _boundaryPeriodMs;
+        private static bool _boundaryPending;
+        private static int _boundaryFires;
+
+        /// <summary>Frames whose boundary latch fired. Equal to StartOfFrameFires within 1 in a healthy
+        /// run; a divergence means the latch is not on the frame boundary it claims.</summary>
+        public static int BoundaryFires
+        {
+            get { return _boundaryFires; }
+        }
+
+        /// <summary>
+        /// Hands Telemetry the period for the frame just completed, and reports whether there was one.
+        ///
+        /// False means the boundary has not fired since the previous call - the markers were dropped, or
+        /// the profiler is not installed. The caller must then emit null rather than a stale number: a
+        /// frozen `period` repeated every frame is indistinguishable from a healthy one, which is the
+        /// failure this project keeps rediscovering (proc zeros, gcPhase selected by its own success,
+        /// endToStart null for two different reasons).
+        /// </summary>
+        public static bool ConsumeFrameBoundary(out double periodMs)
+        {
+            periodMs = _boundaryPeriodMs;
+            bool valid = _boundaryPending;
+            _boundaryPending = false;
+            return valid;
+        }
+
+        public static void ResetBoundaryCounters()
+        {
+            _boundaryFires = 0;
+        }
+
+        private static PlayerLoopSystem MakeFrameBoundaryBegin(int slot)
+        {
+            return new PlayerLoopSystem
+            {
+                type = typeof(BeginMarker),
+                updateDelegate = delegate
+                {
+                    long now = Stopwatch.GetTimestamp();
+
+                    // Snapshot first: the phase totals being copied belong to the frame that just ended,
+                    // and _totals[slot] for this phase was written by its own End marker last frame. The
+                    // order does not affect correctness, only how obvious it is that it does not.
+                    ReadAndReset();
+
+                    // Zero on the first boundary of a run, which Telemetry's periodMs > 0 guard drops.
+                    _boundaryPeriodMs = _boundaryTicks == 0L
+                        ? 0d
+                        : (now - _boundaryTicks) * 1000d / Stopwatch.Frequency;
+                    _boundaryTicks = now;
+                    _boundaryPending = true;
+                    _boundaryFires++;
+
+                    _starts[slot] = now;
+                    _gcStarts[slot] = GC.CollectionCount(0);
+                }
+            };
+        }
+
+        /// <summary>
+        /// Removes markers left by a previous Install, so installing twice is idempotent.
+        ///
+        /// Without this, Install wraps whatever it finds - including our own markers - and a reinstall
+        /// nests a second layer over the first. That was harmless while MarkersPresent required *every*
+        /// phase to have lost its marker, because by then there was nothing of ours left to wrap. Once the
+        /// check tightened to "any phase missing", the common case became a reinstall over seven intact
+        /// phases: one extra layer every five seconds, unbounded, with our own marker types appearing as
+        /// children in the phase names.
+        ///
+        /// Filtering both marker types recovers the original child list exactly, at any nesting depth.
+        /// </summary>
+        private static PlayerLoopSystem[] StripMarkers(PlayerLoopSystem[] systems)
+        {
+            if (systems == null || systems.Length == 0)
+            {
+                return new PlayerLoopSystem[0];
+            }
+
+            System.Collections.Generic.List<PlayerLoopSystem> kept =
+                new System.Collections.Generic.List<PlayerLoopSystem>(systems.Length);
+
+            foreach (PlayerLoopSystem system in systems)
+            {
+                if (system.type != typeof(BeginMarker) && system.type != typeof(EndMarker))
+                {
+                    kept.Add(system);
+                }
+            }
+
+            return kept.ToArray();
         }
 
         private static PlayerLoopSystem MakeBegin(int slot)
