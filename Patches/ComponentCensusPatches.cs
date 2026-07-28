@@ -196,19 +196,36 @@ namespace Framesaver.Patches
 
             try
             {
-                // includeInactive, or "absent" and "disabled" become indistinguishable.
-                Component[] all = player.gameObject.GetComponentsInChildren<Component>(true);
+                // Two roots, because one is not enough and that assumption failed silently once.
+                //
+                // The weapon is NOT under the player. Player.ItemHandsController.smethod_4 positions
+                // _controllerObject to the ribcage and never reparents it - the only SetParent calls are
+                // inside `if (player.UsedSimplifiedSkeleton)`, zombies with knives or pistols. And the
+                // hands controller itself is AddComponent'd onto player.gameObject (smethod_1:31787), so
+                // rooting there would have re-enumerated the subtree we already had and still missed the
+                // weapon, while growing the census enough to look like a fix.
+                //
+                // ControllerGameObject (Player.cs:31696) returns the weapon object itself rather than a
+                // component on it, so discovery does not presuppose what we are looking for. BSG uses the
+                // same object as a recursion root for exactly this purpose (Player.cs:28879).
+                List<string> rootNames = new List<string>(2);
+                List<int> rootCounts = new List<int>(2);
+                List<Component> keep = new List<Component>(512);
 
-                List<Component> keep = new List<Component>(all.Length);
-                foreach (Component c in all)
+                CollectRoot(player.gameObject, "Player", keep, rootNames, rootCounts);
+
+                GameObject weapon = null;
+                try
                 {
-                    // Transform is one per GameObject and carries no state we can read; including it
-                    // would dominate the count. The type test catches RectTransform too, correctly.
-                    if (c != null && !(c is Transform))
-                    {
-                        keep.Add(c);
-                    }
+                    Player.AbstractHandsController hands = player.HandsController;
+                    weapon = hands != null ? hands.ControllerGameObject : null;
                 }
+                catch (Exception)
+                {
+                    weapon = null;
+                }
+
+                CollectRoot(weapon, "ControllerGameObject", keep, rootNames, rootCounts);
 
                 // Sort BEFORE truncating. Unity's enumeration order is not guaranteed stable, so
                 // truncating first would keep a different arbitrary 1024 each run - the cap would make
@@ -226,6 +243,34 @@ namespace Framesaver.Patches
 
                 sb.Append("\"sample\":\"").Append(sample).Append('"');
                 AppendSubject(sb, player, msSinceDeath);
+
+                // Every root ATTEMPTED, including ones that resolved to null. A roots array listing only
+                // successes is a field whose absence carries meaning - the failure this exists to stop.
+                // [null, 0] says "we looked for a weapon and there wasn't one", which is a finding;
+                // omitting the entry says nothing and looks fine.
+                sb.Append(",\"roots\":[");
+                for (int i = 0; i < rootNames.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        sb.Append(',');
+                    }
+
+                    sb.Append('[');
+                    if (rootNames[i] == null)
+                    {
+                        sb.Append("null");
+                    }
+                    else
+                    {
+                        sb.Append('"').Append(Escape(rootNames[i])).Append('"');
+                    }
+
+                    sb.Append(',').Append(rootCounts[i]).Append(']');
+                }
+
+                sb.Append(']');
+
                 sb.Append(",\"fields\":[\"name\",\"go\",\"enabled\",\"activeInHierarchy\",\"cullingMode\"]");
                 sb.Append(",\"n\":").Append(rows.Count);
                 sb.Append(",\"truncated\":").Append(dropped > 0 ? "true" : "false");
@@ -258,6 +303,41 @@ namespace Framesaver.Patches
         /// and an unsorted list produces spurious diffs. Rows stay duplicated where types repeat, since
         /// the comparison is a multiset.
         /// </summary>
+        /// <summary>
+        /// Enumerates one root into the shared list and records what was attempted.
+        ///
+        /// A null root is recorded as an attempt with a null name and a zero count, never skipped -
+        /// "we looked and found nothing" and "we did not look" must stay distinguishable.
+        /// </summary>
+        private static void CollectRoot(GameObject root, string label, List<Component> into,
+                                        List<string> names, List<int> counts)
+        {
+            if (root == null)
+            {
+                names.Add(null);
+                counts.Add(0);
+                return;
+            }
+
+            // includeInactive, or "absent" and "disabled" become indistinguishable.
+            Component[] all = root.GetComponentsInChildren<Component>(true);
+            int added = 0;
+
+            foreach (Component c in all)
+            {
+                // Transform is one per GameObject and carries no state we can read; including it would
+                // dominate the count. The type test catches RectTransform too, correctly.
+                if (c != null && !(c is Transform))
+                {
+                    into.Add(c);
+                    added++;
+                }
+            }
+
+            names.Add(label);
+            counts.Add(added);
+        }
+
         /// <summary>Owning GameObject, then type name - the order the spec fixes so two censuses of the
         /// same object diff cleanly. Ordinal throughout; culture-sensitive compare would reorder rows
         /// between machines.</summary>
