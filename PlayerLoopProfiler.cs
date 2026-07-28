@@ -86,6 +86,8 @@ namespace Framesaver
                 int count = root.subSystemList.Length;
 
                 System.Collections.Generic.List<string> names = new System.Collections.Generic.List<string>();
+                System.Collections.Generic.List<string> topLevel = new System.Collections.Generic.List<string>();
+                System.Collections.Generic.List<string> expandedNames = new System.Collections.Generic.List<string>();
 
                 // First pass: name every slot we intend to time, so indices are stable before we build the
                 // delegates that close over them.
@@ -94,15 +96,19 @@ namespace Framesaver
                     PlayerLoopSystem phase = root.subSystemList[i];
                     string phaseName = phase.type != null ? phase.type.Name : ("phase" + i);
                     names.Add(phaseName);
+                    topLevel.Add(phaseName);
 
                     if (ShouldExpand(phaseName) && phase.subSystemList != null)
                     {
+                        expandedNames.Add(phaseName);
                         foreach (PlayerLoopSystem child in phase.subSystemList)
                         {
                             names.Add(phaseName + "/" + (child.type != null ? child.type.Name : "?"));
                         }
                     }
                 }
+
+                LogExpansion(expandedNames, topLevel);
 
                 _names = names.ToArray();
                 _starts = new long[_names.Length];
@@ -213,10 +219,80 @@ namespace Framesaver
             }
         }
 
+        /// <summary>
+        /// A blocklist, not an allowlist. An allowlist silently omits any phase nobody thought to name -
+        /// which is how a phase carrying a rare large spike goes unmeasured while the output looks
+        /// complete. A blocklist fails toward collecting too much, which is the right direction when
+        /// runs are scarce.
+        ///
+        /// Empty means expand everything. Deliberately no default entries: `Initialization` medians
+        /// 0.005 ms over 140 in-raid windows and looks like an obvious block, but FINDINGS records one
+        /// in-raid `Initialization` spike at 74.8 ms. Blocking on average cost would reintroduce exactly
+        /// the omission this shape exists to prevent - a spike instrument has to be aimed at the tail.
+        /// </summary>
         private static bool ShouldExpand(string phaseName)
         {
-            string wanted = Plugin.ExpandPhase != null ? Plugin.ExpandPhase.Value : "";
-            return !string.IsNullOrEmpty(wanted) && string.Equals(phaseName, wanted, StringComparison.OrdinalIgnoreCase);
+            string blocked = Plugin.ExpandPhase != null ? Plugin.ExpandPhase.Value : "";
+            if (string.IsNullOrEmpty(blocked))
+            {
+                return true;
+            }
+
+            foreach (string entry in blocked.Split(','))
+            {
+                // Trimmed and case-insensitive, matching what the allowlist accepted. A stricter
+                // replacement would silently start expanding a phase someone had been blocking.
+                if (string.Equals(entry.Trim(), phaseName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Reports what was actually expanded and which blocklist entries matched nothing.
+        ///
+        /// The failure mode got quieter with the move to a blocklist: a typo in an allowlist expanded
+        /// nothing and was obvious in the output, while a typo in a blocklist expands a phase you meant
+        /// to block and looks identical to a correct run. This is the line that makes it visible.
+        /// </summary>
+        private static void LogExpansion(System.Collections.Generic.List<string> expanded,
+                                        System.Collections.Generic.List<string> topLevel)
+        {
+            string blocked = Plugin.ExpandPhase != null ? Plugin.ExpandPhase.Value : "";
+            System.Collections.Generic.List<string> unmatched = new System.Collections.Generic.List<string>();
+
+            foreach (string entry in blocked.Split(','))
+            {
+                string trimmed = entry.Trim();
+                if (trimmed.Length == 0)
+                {
+                    continue;
+                }
+
+                bool matched = false;
+                for (int i = 0; i < topLevel.Count; i++)
+                {
+                    if (string.Equals(trimmed, topLevel[i], StringComparison.OrdinalIgnoreCase))
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+
+                if (!matched)
+                {
+                    unmatched.Add(trimmed);
+                }
+            }
+
+            Plugin.LogSource.LogInfo("Framesaver player loop: expanded [" + string.Join(", ", expanded.ToArray())
+                                     + "]" + (unmatched.Count > 0
+                                         ? " - blocklist entries matching no phase: "
+                                           + string.Join(", ", unmatched.ToArray())
+                                         : ""));
         }
 
         private static PlayerLoopSystem MakeBegin(int slot)
