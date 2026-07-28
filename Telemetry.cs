@@ -482,48 +482,132 @@ namespace Framesaver
         /// than a measurement, and hard-fault rate needs an external poller. Deltas per window are what
         /// matter; the absolutes exist only to give the trajectory a baseline, since the only two samples
         /// anyone has taken were accidental and at different points in a session.
+        ///
+        /// Read through psapi rather than System.Diagnostics.Process. WorkingSet64 and
+        /// PrivateMemorySize64 return 0 under this Mono, in every window of every run to date, and
+        /// **from inside the log a dead field and a real zero are the same bytes**. That was caught
+        /// only because the same quantity had been measured externally an hour earlier - so the zero
+        /// guard below is the instrument, not padding around it.
         /// </summary>
         private void AppendProc(StringBuilder sb)
         {
+            ProcessMemoryCountersEx c = default(ProcessMemoryCountersEx);
+            bool ok;
+
             try
             {
-                System.Diagnostics.Process p = System.Diagnostics.Process.GetCurrentProcess();
-                p.Refresh();
-
-                long ws = p.WorkingSet64;
-                long priv = p.PrivateMemorySize64;
-
-                sb.Append(",\"proc\":{\"wsMb\":").Append(ws / 1048576L);
-                sb.Append(",\"privMb\":").Append(priv / 1048576L);
-                sb.Append(",\"notResidentMb\":").Append((priv - ws) / 1048576L);
-                sb.Append(",\"wsDeltaMb\":").Append(_lastWs == 0L ? 0L : (ws - _lastWs) / 1048576L);
-                sb.Append(",\"privDeltaMb\":").Append(_lastPriv == 0L ? 0L : (priv - _lastPriv) / 1048576L);
-                sb.Append('}');
-
-                _lastWs = ws;
-                _lastPriv = priv;
+                ok = GetProcessMemoryInfo(GetCurrentProcess(), out c,
+                                          (uint)Marshal.SizeOf(typeof(ProcessMemoryCountersEx)));
             }
             catch (Exception)
             {
-                // Explicit failure rather than omission - an absent block would be indistinguishable
-                // from a run where nobody asked for it.
-                sb.Append(",\"proc\":null");
+                // DllNotFound / EntryPointNotFound - the call never happened at all.
+                sb.Append(",\"proc\":{\"err\":\"pinvoke\"}");
+                return;
             }
+
+            long ws = ok ? (long)c.WorkingSetSize.ToUInt64() : 0L;
+            long priv = ok ? (long)c.PrivateUsage.ToUInt64() : 0L;
+
+            if (!ok || ws == 0L || priv == 0L)
+            {
+                // A running process cannot have a zero working set. Emitting the zeros is exactly
+                // what made the previous implementation read as a measurement for a whole day.
+                sb.Append(",\"proc\":{\"err\":\"").Append(ok ? "zero" : "call").Append("\"}");
+                return;
+            }
+
+            // Signed before subtracting: WorkingSetSize counts shared pages that PrivateUsage does
+            // not, so working set legitimately exceeds commit and an unsigned difference wraps.
+            long faults = c.PageFaultCount;
+
+            sb.Append(",\"proc\":{\"wsMb\":").Append(ws / 1048576L);
+            sb.Append(",\"privMb\":").Append(priv / 1048576L);
+            sb.Append(",\"notResidentMb\":").Append((priv - ws) / 1048576L);
+            sb.Append(",\"faults\":").Append(faults);
+
+            if (_hasProcBaseline)
+            {
+                sb.Append(",\"wsDeltaMb\":").Append((ws - _lastWs) / 1048576L);
+                sb.Append(",\"privDeltaMb\":").Append((priv - _lastPriv) / 1048576L);
+                sb.Append(",\"faultsDelta\":").Append(faults - _lastFaults);
+            }
+            else
+            {
+                // null, not 0, on the first window. "No baseline yet" and "nothing moved" are
+                // different readings; the previous implementation reported both as 0.
+                sb.Append(",\"wsDeltaMb\":null,\"privDeltaMb\":null,\"faultsDelta\":null");
+            }
+
+            sb.Append('}');
+
+            _lastWs = ws;
+            _lastPriv = priv;
+            _lastFaults = faults;
+            _hasProcBaseline = true;
         }
+
+        /// <summary>
+        /// PROCESS_MEMORY_COUNTERS_EX. PrivateUsage is the process commit charge - Task Manager's
+        /// "Commit size", and the field carrying the 31.2 GB figure. It exists only in the EX form,
+        /// which is why the size is passed explicitly rather than taken from the base struct.
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ProcessMemoryCountersEx
+        {
+            public uint cb;
+            public uint PageFaultCount;
+            public UIntPtr PeakWorkingSetSize;
+            public UIntPtr WorkingSetSize;
+            public UIntPtr QuotaPeakPagedPoolUsage;
+            public UIntPtr QuotaPagedPoolUsage;
+            public UIntPtr QuotaPeakNonPagedPoolUsage;
+            public UIntPtr QuotaNonPagedPoolUsage;
+            public UIntPtr PagefileUsage;
+            public UIntPtr PeakPagefileUsage;
+            public UIntPtr PrivateUsage;
+        }
+
+        [DllImport("psapi.dll", SetLastError = true)]
+        private static extern bool GetProcessMemoryInfo(IntPtr process, out ProcessMemoryCountersEx counters,
+                                                        uint size);
+
+        /// <summary>Returns the pseudo-handle -1; nothing to close.</summary>
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
 
         private long _lastWs;
         private long _lastPriv;
+        private long _lastFaults;
+        private bool _hasProcBaseline;
 
         private int _negResidualFrames;
         private int _frameOverPeriodFrames;
 
+        // Magnitude alongside count, because the counts have no threshold and cannot be read as a
+        // rate on their own. Worst gives the tail; Sum over the count gives the mean, which is what
+        // separates sub-millisecond jitter from the split-Update mechanism at tens to hundreds of ms.
+        // Neither pre-commits to a cut, so the cut can be chosen from the data rather than guessed
+        // now - the mistake that produced the 23.9% figure this comment used to carry.
+        private double _negResidualWorstMs;
+        private double _negResidualSumMs;
+        private double _frameOverPeriodWorstMs;
+        private double _frameOverPeriodSumMs;
+
         /// <summary>
         /// Counts the two clock-disagreement signatures on EVERY frame, not just spike lines.
         ///
-        /// `unaccounted` must never be negative - the methodology note that says so was written when the
-        /// original off-by-one was fixed, and the defect is back: measured at 23.9% of in-raid spike
-        /// lines. `frame > period` is structurally impossible unless BSG's measure of one frame and our
-        /// wall-clock interval cover different spans, at 29.1%.
+        /// `unaccounted` must never be negative, and it is: **~8-10% of in-raid spike lines at a 1 ms
+        /// cut, stable across builds** (10.5% control, 8.3% on 2026-07-28). It predates the first
+        /// build of that day, so nothing shipped since caused it. The mechanism is known - see the
+        /// note on EmitSpikeEvent - and the fix is to move the snapshot boundary out of `Update`.
+        ///
+        /// **The raw counts are not defect rates and must not be quoted as ones.** They carry no
+        /// magnitude cut. `frameOverPeriodFrames` in particular reads near 50% of all frames, which
+        /// is exactly what two clocks measuring the same span with symmetric sub-millisecond noise
+        /// produce: at face value it is evidence the clocks agree, not that they disagree. An earlier
+        /// version of this comment cited 23.9% and 29.1% from uncut counts and read as establishing a
+        /// defect rate that does not exist. The Worst and Sum fields exist to prevent the repeat.
         ///
         /// Counting only on spike lines sees the tail. The mechanism moves time from line N to line N+1,
         /// so it makes N large and N+1 ordinary - which means **any filter selecting lines by magnitude
@@ -534,9 +618,25 @@ namespace Framesaver
         /// </summary>
         private void CountClockDisagreement(double periodMs, double frameMs)
         {
+            // The first sampled frame of a process has no previous timestamp, so `period` is 0 against a
+            // span that was never measured. Both comparisons below then fire once, and the residual one
+            // fires against the whole phase total accumulated since install - a single frame carrying an
+            // arbitrarily large deficit into the worst-magnitude field, which is the field least able to
+            // absorb it.
+            if (periodMs <= 0d)
+            {
+                return;
+            }
+
             if (frameMs > periodMs)
             {
+                double over = frameMs - periodMs;
                 _frameOverPeriodFrames++;
+                _frameOverPeriodSumMs += over;
+                if (over > _frameOverPeriodWorstMs)
+                {
+                    _frameOverPeriodWorstMs = over;
+                }
             }
 
             if (!PlayerLoopProfiler.Installed)
@@ -557,9 +657,17 @@ namespace Framesaver
                 }
             }
 
-            if (periodMs - accounted < 0d)
+            // Deficit rather than residual, so the magnitude is positive and the two Worst fields read
+            // the same direction: both are "how far the wrong way did this frame go".
+            double deficit = accounted - periodMs;
+            if (deficit > 0d)
             {
                 _negResidualFrames++;
+                _negResidualSumMs += deficit;
+                if (deficit > _negResidualWorstMs)
+                {
+                    _negResidualWorstMs = deficit;
+                }
             }
         }
 
@@ -698,8 +806,15 @@ namespace Framesaver
         ///
         /// Caveat on individual phases: this runs inside ScriptRunBehaviourUpdate, so phases that execute before
         /// Update (TimeUpdate, Initialization, EarlyUpdate, FixedUpdate, PreUpdate) are this frame's, while
-        /// Update, PreLateUpdate and PostLateUpdate are the previous frame's. The sum is still exactly one
-        /// frame's wall time, which is what makes the residual valid.
+        /// Update, PreLateUpdate and PostLateUpdate are the previous frame's.
+        ///
+        /// **This comment used to end "the sum is still exactly one frame's wall time, which is what makes the
+        /// residual valid". That is wrong and `unaccounted` does go negative.** The sum is one duration per
+        /// phase, but the sample point sits *inside* Update, so the eight durations do not tile the interval
+        /// `period` measures. A stall in Update before this method runs lands in `period` on one line and in
+        /// the Update phase total on the next: positive residual, then negative. No clock is wrong - three
+        /// correct measurements covering slightly different intervals. Moving the snapshot to the frame
+        /// boundary is the fix, and negResidualWorstMs is what will show whether it worked.
         /// </summary>
         private void EmitSpikeEvent(double periodMs, double frameMs)
         {
@@ -999,10 +1114,17 @@ namespace Framesaver
             // it the only record of arming is a BepInEx warning, which is the "identifiable from the log
             // rather than from the data" failure the failedPatches item exists for - in a field built
             // specifically so a null and a zero could not be confused.
-            // Clock-disagreement counts over every frame in the window, not just the spike lines. Both
-            // should be zero; neither is. See CountClockDisagreement.
+            // Clock-disagreement counts over every frame in the window, not just the spike lines.
+            // Count, worst magnitude and summed magnitude together, because the counts alone are
+            // uncut and near-50% counts are the aligned-clocks signature rather than a defect rate.
+            // Read Sum/Frames as the mean: well under 1 ms is jitter, tens of ms is the mechanism.
+            // See CountClockDisagreement.
             sb.Append(",\"negResidualFrames\":").Append(_negResidualFrames);
+            sb.Append(",\"negResidualWorstMs\":").Append(Fmt(_negResidualWorstMs));
+            sb.Append(",\"negResidualSumMs\":").Append(Fmt(_negResidualSumMs));
             sb.Append(",\"frameOverPeriodFrames\":").Append(_frameOverPeriodFrames);
+            sb.Append(",\"frameOverPeriodWorstMs\":").Append(Fmt(_frameOverPeriodWorstMs));
+            sb.Append(",\"frameOverPeriodSumMs\":").Append(Fmt(_frameOverPeriodSumMs));
 
             sb.Append(",\"frameGapArmed\":").Append(Bool(PlayerLoopProfiler.FrameGapArmed));
             sb.Append(",\"endOfFrameFires\":").Append(PlayerLoopProfiler.EndOfFrameFires);
@@ -1284,7 +1406,11 @@ namespace Framesaver
             _distance = 0d;
             _posSamples = 0;
             _negResidualFrames = 0;
+            _negResidualWorstMs = 0d;
+            _negResidualSumMs = 0d;
             _frameOverPeriodFrames = 0;
+            _frameOverPeriodWorstMs = 0d;
+            _frameOverPeriodSumMs = 0d;
             PlayerLoopProfiler.ResetFrameGapCounters();
 
             _frame.Reset();
