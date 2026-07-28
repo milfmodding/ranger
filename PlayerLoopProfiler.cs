@@ -136,10 +136,53 @@ namespace Framesaver
             }
         }
 
+        // ---- endToLatch: the same gap, closed at the frame boundary --------------------------------
+        //
+        // endToStart is written in OnStartOfFrame, which SPT injects into EarlyUpdate - AFTER the phase-0
+        // Begin marker where `period` and the snapshot are now latched. So the span
+        // [EndOfFrame(N-1), StartOfFrame(N)] straddles the closing boundary of the period being reported,
+        // and a stall sitting across that boundary lands in one field and not the other.
+        //
+        // Before the boundary latch both were taken inside Sample(), which contained the span, and the
+        // pair held to +/-0.72 ms on 12 of 12. After it, Alpha measured endToStart on line i-1 against
+        // unaccounted on line i: medians 334.72 and 334.71, |difference| 0.04 ms over 28 pairs. The time
+        // was never lost - it was reported one line early.
+        //
+        // **This is the defect I fixed for `period`, one field over, introduced by the fix.** I checked
+        // that item 4's diff did not touch these subscriptions and concluded it did not affect them. A
+        // field can be broken by a change that does not touch it: the diff shows one side of a
+        // relationship and correctness lives between the two.
+        //
+        // Closing the gap at the latch instead makes it paired by construction rather than by timing,
+        // exactly as `period` and the snapshot now are. It also collapses the three-term identity
+        // (endToStart - TimeUpdate[N+1] - Initialization[N+1]) to one term, because the span now ends
+        // where the period ends.
+        private static double _endToLatchMs;
+        private static bool _latchGapValid;
+        private static int _endCountSinceLatch;
+
+        /// <summary>
+        /// Wall time from the last subsystem of PostLateUpdate to the frame boundary that closes the
+        /// period being reported. Unlike EndToStartMs this needs no subtraction: it ends where `period`
+        /// ends, so it is directly comparable with `unaccounted` on the same line.
+        /// </summary>
+        public static double EndToLatchMs
+        {
+            get { return _endToLatchMs; }
+        }
+
+        /// <summary>False when the EndOfFrame/latch pairing was not 1:1 for the frame just closed, so the
+        /// span cannot be trusted to be one boundary. Emit null, never the number.</summary>
+        public static bool LatchGapValid
+        {
+            get { return _latchGapValid; }
+        }
+
         private static void OnEndOfFrame()
         {
             _endOfFrameAt = Stopwatch.GetTimestamp();
             _endCount++;
+            _endCountSinceLatch++;
             _endFires++;
         }
 
@@ -518,6 +561,17 @@ namespace Framesaver
                 updateDelegate = delegate
                 {
                     long now = Stopwatch.GetTimestamp();
+
+                    // The inter-frame gap, closed here rather than at StartOfFrame so it shares this
+                    // instant with `period` and the snapshot. Same pairing guard as endToStart, re-based
+                    // on the latch: exactly one EndOfFrame since the previous boundary is the only case
+                    // where this span is one frame boundary.
+                    _latchGapValid = _endCountSinceLatch == 1 && _endOfFrameAt != 0L;
+                    _endCountSinceLatch = 0;
+                    if (_latchGapValid)
+                    {
+                        _endToLatchMs = (now - _endOfFrameAt) * 1000d / Stopwatch.Frequency;
+                    }
 
                     // Snapshot first: the phase totals being copied belong to the frame that just ended,
                     // and _totals[slot] for this phase was written by its own End marker last frame. The
