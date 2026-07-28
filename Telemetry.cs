@@ -514,6 +514,55 @@ namespace Framesaver
         private long _lastWs;
         private long _lastPriv;
 
+        private int _negResidualFrames;
+        private int _frameOverPeriodFrames;
+
+        /// <summary>
+        /// Counts the two clock-disagreement signatures on EVERY frame, not just spike lines.
+        ///
+        /// `unaccounted` must never be negative - the methodology note that says so was written when the
+        /// original off-by-one was fixed, and the defect is back: measured at 23.9% of in-raid spike
+        /// lines. `frame > period` is structurally impossible unless BSG's measure of one frame and our
+        /// wall-clock interval cover different spans, at 29.1%.
+        ///
+        /// Counting only on spike lines sees the tail. The mechanism moves time from line N to line N+1,
+        /// so it makes N large and N+1 ordinary - which means **any filter selecting lines by magnitude
+        /// is structurally blind to the follow-up line**, and the population defined by the instrument's
+        /// own trigger is the population that hides it. Hence every frame.
+        ///
+        /// Two comparisons and a sum over eight top-level phases per frame.
+        /// </summary>
+        private void CountClockDisagreement(double periodMs, double frameMs)
+        {
+            if (frameMs > periodMs)
+            {
+                _frameOverPeriodFrames++;
+            }
+
+            if (!PlayerLoopProfiler.Installed)
+            {
+                return;
+            }
+
+            string[] names = PlayerLoopProfiler.PhaseNames;
+            double[] phase = PlayerLoopProfiler.Snapshot;
+            double accounted = 0d;
+
+            for (int i = 0; i < phase.Length && i < names.Length; i++)
+            {
+                // Top-level only; children would double-count their parent. Same rule as the spike line.
+                if (names[i].IndexOf('/') < 0)
+                {
+                    accounted += phase[i];
+                }
+            }
+
+            if (periodMs - accounted < 0d)
+            {
+                _negResidualFrames++;
+            }
+        }
+
         private void Sample()
         {
             // Collections since the previous sampled frame. Per-window gen0 cannot resolve a single 330ms
@@ -626,6 +675,8 @@ namespace Framesaver
             long now = Stopwatch.GetTimestamp();
             double periodMs = _lastSampleTicks == 0L ? 0d : AiTiming.ToMs(now - _lastSampleTicks);
             _lastSampleTicks = now;
+
+            CountClockDisagreement(periodMs, frameMs);
 
             if (periodMs >= Plugin.SpikeEventMs.Value && Plugin.SpikeEventMs.Value > 0f)
             {
@@ -948,6 +999,11 @@ namespace Framesaver
             // it the only record of arming is a BepInEx warning, which is the "identifiable from the log
             // rather than from the data" failure the failedPatches item exists for - in a field built
             // specifically so a null and a zero could not be confused.
+            // Clock-disagreement counts over every frame in the window, not just the spike lines. Both
+            // should be zero; neither is. See CountClockDisagreement.
+            sb.Append(",\"negResidualFrames\":").Append(_negResidualFrames);
+            sb.Append(",\"frameOverPeriodFrames\":").Append(_frameOverPeriodFrames);
+
             sb.Append(",\"frameGapArmed\":").Append(Bool(PlayerLoopProfiler.FrameGapArmed));
             sb.Append(",\"endOfFrameFires\":").Append(PlayerLoopProfiler.EndOfFrameFires);
             sb.Append(",\"startOfFrameFires\":").Append(PlayerLoopProfiler.StartOfFrameFires);
@@ -1227,6 +1283,8 @@ namespace Framesaver
             // spurious jump at every window boundary from re-seeding against an unset origin.
             _distance = 0d;
             _posSamples = 0;
+            _negResidualFrames = 0;
+            _frameOverPeriodFrames = 0;
             PlayerLoopProfiler.ResetFrameGapCounters();
 
             _frame.Reset();
