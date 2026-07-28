@@ -254,6 +254,7 @@ namespace Framesaver
 
         private float _nextWrite;
         private float _windowStart;
+        private bool _flushedByProtocol;
         private int _window;
         private int _asyncFixedSkips;
 
@@ -327,6 +328,9 @@ namespace Framesaver
                 // reports them forever. See ResetForRaid.
                 Framesaver.Patches.SleepingBotAnimatorPatch.ResetForRaid();
                 Framesaver.Patches.Census.ResetForRaid();
+                // Re-reads the file too, so editing a protocol takes effect on the next raid rather
+                // than the next launch.
+                ProtocolRunner.ResetForRaid();
 
                 ResetWindow();
             }
@@ -381,6 +385,15 @@ namespace Framesaver
                 {
                     PlayerLoopProfiler.Install();
                 }
+            }
+
+            // Before the ordinary roll below, so a press and a timed boundary in the same frame produce
+            // one flush rather than two - the second would be an empty window.
+            if (Plugin.ProtocolKey.Value.IsDown() && ProtocolRunner.Advance())
+            {
+                _flushedByProtocol = true;
+                Flush(false);
+                _nextWrite = Time.realtimeSinceStartup + Plugin.TelemetryWindow.Value;
             }
 
             if (Time.realtimeSinceStartup >= _nextWrite)
@@ -1329,6 +1342,42 @@ namespace Framesaver
             sb.Append(",\"endOfFrameFires\":").Append(PlayerLoopProfiler.EndOfFrameFires);
             sb.Append(",\"startOfFrameFires\":").Append(PlayerLoopProfiler.StartOfFrameFires);
 
+            // Null when no protocol is loaded, never an empty object - and emitted on every line rather
+            // than only when present, so "no protocol" and "this build has no protocol support" are not
+            // spelled the same across the era boundary this introduces.
+            //
+            // step 0 with a protocol loaded is a real state: armed, waiting for the first press. That is
+            // why absent-protocol is null rather than 0.
+            //
+            // flushedByProtocol marks the window the keypress cut short. It is a partial window - shorter
+            // than `windowSec` would suggest for a full one - and nobody should average it in with whole
+            // windows. Marked rather than suppressed, because the contaminated interval is exactly the one
+            // an analyst may want to look at deliberately.
+            if (ProtocolRunner.Loaded)
+            {
+                sb.Append(",\"protocol\":{\"name\":\"").Append(Escape(ProtocolRunner.Name))
+                  .Append("\",\"step\":").Append(ProtocolRunner.StepIndex)
+                  .Append(",\"steps\":").Append(ProtocolRunner.StepCount)
+                  .Append(",\"arm\":");
+                string arm = ProtocolRunner.Arm;
+                if (arm == null)
+                {
+                    sb.Append("null");
+                }
+                else
+                {
+                    sb.Append('"').Append(Escape(arm)).Append('"');
+                }
+
+                sb.Append('}');
+            }
+            else
+            {
+                sb.Append(",\"protocol\":null");
+            }
+
+            sb.Append(",\"flushedByProtocol\":").Append(Bool(_flushedByProtocol));
+
             // windowSeconds is the SETTING; windowSec above is what this window actually lasted. Both,
             // because a short measured window has two causes that need telling apart: a flush closed it
             // early (intentional, and the line is still valid), or someone edited the setting mid-session
@@ -1604,6 +1653,8 @@ namespace Framesaver
 
         private void ResetWindow()
         {
+            _flushedByProtocol = false;
+
             _periodSamples = 0;
 
             // Position accumulators. _lastPos and _hasPos deliberately survive: distance must not gain a
