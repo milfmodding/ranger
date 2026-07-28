@@ -195,6 +195,24 @@ namespace Framesaver
         /// </summary>
         private int _raidedWorldId;
 
+        // ---- Position ------------------------------------------------------------------------------
+        //
+        // Location dominates frame time on large maps, and until now every cross-window comparison could
+        // only *warn* about it. Six caveats in FINDINGS say "hold position"; nothing checked whether it
+        // was held. The knob A/B on 2026-07-28 was rendered uninterpretable by exactly this - p50 drifted
+        // 13.9 -> 22.1 -> 14.3 while awake bots sat flat, so the reversal did not reverse.
+        //
+        // `dist` is the field that matters, not the coordinates. A point sample at flush time answers
+        // "where was she when the window ended", which for 60 seconds is nearly useless; the question is
+        // "did she move during this window", and that is a distance, not a position. It turns a caveat a
+        // reader has to remember into a filter the data enforces.
+        private bool _hasPos;
+        private Vector3 _lastPos;
+        private double _distance;
+        private Vector3 _posMin;
+        private Vector3 _posMax;
+        private int _posSamples;
+
         /// <summary>
         /// GameWorld.LocationId for the raid currently being sampled, and a 1-based counter of raids since
         /// the game launched. One log file spans every raid of a session, so without these two there is no
@@ -386,6 +404,116 @@ namespace Framesaver
             }
         }
 
+        /// <summary>
+        /// Accumulates the main player's movement for the window. Two property reads per frame.
+        ///
+        /// Distance is summed per frame rather than taken as start-to-end displacement, so a loop that
+        /// returns to its origin still reports as movement - which is the case a displacement measure
+        /// would call stationary and a frame-time comparison would then trust.
+        /// </summary>
+        private void SamplePosition()
+        {
+            if (!Singleton<GameWorld>.Instantiated)
+            {
+                return;
+            }
+
+            GameWorld world = Singleton<GameWorld>.Instance;
+            Player player = world != null ? world.MainPlayer : null;
+            if (player == null)
+            {
+                return;
+            }
+
+            Vector3 p = player.Position;
+
+            if (_posSamples == 0)
+            {
+                _posMin = p;
+                _posMax = p;
+            }
+            else
+            {
+                _posMin = Vector3.Min(_posMin, p);
+                _posMax = Vector3.Max(_posMax, p);
+                if (_hasPos)
+                {
+                    _distance += Vector3.Distance(_lastPos, p);
+                }
+            }
+
+            _lastPos = p;
+            _hasPos = true;
+            _posSamples++;
+        }
+
+        /// <summary>
+        /// Emits the window's movement, or explicit nulls when no player was ever sampled - a teardown
+        /// window must be visibly a teardown window rather than a gap.
+        /// </summary>
+        private void AppendPosition(StringBuilder sb)
+        {
+            if (_posSamples == 0)
+            {
+                sb.Append(",\"pos\":{\"dist\":null,\"samples\":0}");
+                return;
+            }
+
+            sb.Append(",\"pos\":{\"dist\":").Append(Fmt(_distance));
+            sb.Append(",\"samples\":").Append(_posSamples);
+            sb.Append(",\"x\":[").Append(Fmt(_posMin.x)).Append(',').Append(Fmt(_posMax.x)).Append(']');
+            sb.Append(",\"y\":[").Append(Fmt(_posMin.y)).Append(',').Append(Fmt(_posMax.y)).Append(']');
+            sb.Append(",\"z\":[").Append(Fmt(_posMin.z)).Append(',').Append(Fmt(_posMax.z)).Append(']');
+            sb.Append(",\"end\":[").Append(Fmt(_lastPos.x)).Append(',').Append(Fmt(_lastPos.y))
+              .Append(',').Append(Fmt(_lastPos.z)).Append(']');
+            sb.Append('}');
+        }
+
+        /// <summary>
+        /// Process memory, once per window.
+        ///
+        /// Alpha measured 31.2 GB private commit against a 22.3 GB working set on a machine with 10.6 GB
+        /// free - so ~9 GB is committed and not resident. That is not a GC story: the managed heap is
+        /// ~2.5 GB, 8% of commit. It is here because **B is time outside PlayerLoop() entirely**, and a
+        /// hard page fault blocks the thread wherever it occurs - native or managed - landing in exactly
+        /// that interval while being invisible to every phase marker.
+        ///
+        /// A candidate, not a finding. PageFaultCount counts soft faults too, so it is a proxy rather
+        /// than a measurement, and hard-fault rate needs an external poller. Deltas per window are what
+        /// matter; the absolutes exist only to give the trajectory a baseline, since the only two samples
+        /// anyone has taken were accidental and at different points in a session.
+        /// </summary>
+        private void AppendProc(StringBuilder sb)
+        {
+            try
+            {
+                System.Diagnostics.Process p = System.Diagnostics.Process.GetCurrentProcess();
+                p.Refresh();
+
+                long ws = p.WorkingSet64;
+                long priv = p.PrivateMemorySize64;
+
+                sb.Append(",\"proc\":{\"wsMb\":").Append(ws / 1048576L);
+                sb.Append(",\"privMb\":").Append(priv / 1048576L);
+                sb.Append(",\"notResidentMb\":").Append((priv - ws) / 1048576L);
+                sb.Append(",\"wsDeltaMb\":").Append(_lastWs == 0L ? 0L : (ws - _lastWs) / 1048576L);
+                sb.Append(",\"privDeltaMb\":").Append(_lastPriv == 0L ? 0L : (priv - _lastPriv) / 1048576L);
+                sb.Append('}');
+
+                _lastWs = ws;
+                _lastPriv = priv;
+            }
+            catch (Exception)
+            {
+                // Explicit failure rather than omission - an absent block would be indistinguishable
+                // from a run where nobody asked for it.
+                sb.Append(",\"proc\":null");
+            }
+        }
+
+        private long _lastWs;
+        private long _lastPriv;
+
         private void Sample()
         {
             // Collections since the previous sampled frame. Per-window gen0 cannot resolve a single 330ms
@@ -399,6 +527,8 @@ namespace Framesaver
             // The frame measurers only exist once a match is being set up, so everything that reads them is
             // optional now that sampling starts at plugin load. The phase timers, GC counters and drain
             // diagnostics work regardless, and they are what the pre-raid data is for.
+            SamplePosition();
+
             GClass1357 m = Singleton<GClass1357>.Instantiated ? Singleton<GClass1357>.Instance : null;
             double gameUpdate = 0d;
 
@@ -545,6 +675,18 @@ namespace Framesaver
             Num(sb, "period", periodMs);
             Num(sb, "frame", frameMs);
 
+            // Where this frame happened. A spike that only occurs in one part of a map is a different
+            // finding from one that happens anywhere, and nothing has been able to tell them apart.
+            if (_hasPos)
+            {
+                sb.Append(",\"at\":[").Append(Fmt(_lastPos.x)).Append(',').Append(Fmt(_lastPos.y))
+                  .Append(',').Append(Fmt(_lastPos.z)).Append(']');
+            }
+            else
+            {
+                sb.Append(",\"at\":null");
+            }
+
             // Wall time from PostLateUpdate's last subsystem to EarlyUpdate's first - i.e. outside
             // PlayerLoop() entirely. Contains TimeUpdate and Initialization, both measured separately in
             // `phases`, so the native inter-frame gap is this minus those two. Raw rather than
@@ -687,6 +829,9 @@ namespace Framesaver
             sb.Append(",\"frames\":").Append(_periodSamples);
             sb.Append(",\"n\":").Append(_frame.Count);
 
+            AppendPosition(sb);
+            AppendProc(sb);
+
             Block(sb, "frame", _frame);
             Block(sb, "gameUpdate", _gameUpdate);
             Block(sb, "jobQueue", _jobQueue);
@@ -798,6 +943,15 @@ namespace Framesaver
 
             // Repeated per line, not just in the header: BepInEx config is live-editable, so a header written
             // at plugin load can be stale by the time the raid starts.
+            // frameGapArmed distinguishes the two meanings of a null endToStart: the subscription never
+            // armed (a whole-run condition) or the pairing was not 1:1 on that frame (per-frame). Without
+            // it the only record of arming is a BepInEx warning, which is the "identifiable from the log
+            // rather than from the data" failure the failedPatches item exists for - in a field built
+            // specifically so a null and a zero could not be confused.
+            sb.Append(",\"frameGapArmed\":").Append(Bool(PlayerLoopProfiler.FrameGapArmed));
+            sb.Append(",\"endOfFrameFires\":").Append(PlayerLoopProfiler.EndOfFrameFires);
+            sb.Append(",\"startOfFrameFires\":").Append(PlayerLoopProfiler.StartOfFrameFires);
+
             sb.Append(",\"cfg\":{\"standBy\":").Append(Bool(Plugin.StandByEnabled.Value))
               .Append(",\"leakFix\":").Append(Bool(Plugin.FixAgentLeak.Value))
               .Append(",\"brainPeriod\":").Append(Fmt(Plugin.BrainUpdatePeriod.Value))
@@ -1068,6 +1222,13 @@ namespace Framesaver
         private void ResetWindow()
         {
             _periodSamples = 0;
+
+            // Position accumulators. _lastPos and _hasPos deliberately survive: distance must not gain a
+            // spurious jump at every window boundary from re-seeding against an unset origin.
+            _distance = 0d;
+            _posSamples = 0;
+            PlayerLoopProfiler.ResetFrameGapCounters();
+
             _frame.Reset();
             _gameUpdate.Reset();
             _jobQueue.Reset();
