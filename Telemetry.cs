@@ -109,6 +109,11 @@ namespace Framesaver
             // stall we measure. What separates them is *which* world: each raid builds a new one, so a
             // world we have already sampled a raid in can only be the post-raid menu. Stored as an id
             // rather than a reference - holding a GameWorld here would be the leak shape we just fixed.
+            //
+            // Known residual: a raid that aborts before reaching GameStatus.Started never latches an id,
+            // so the menu after it still reports `loading`. Rare and self-limiting, and much smaller than
+            // the artifact this removes - but it makes the fix "most menu idle" rather than "menu idle",
+            // and the next reader should not have to rediscover that.
             return Singleton<GameWorld>.Instance.GetInstanceID() == _raidedWorldId
                 ? SessionState.Menu
                 : SessionState.Loading;
@@ -523,9 +528,14 @@ namespace Framesaver
             // have exactly the shape of a stop-the-world pause: no measured phase accounts for them, and
             // they are suspiciously uniform in size. If gen0 is non-zero on those lines, that is the answer.
             sb.Append("{\"type\":\"spike\",\"window\":").Append(_window);
-            // Raw QPC, for joining against an external capture. Stopwatch is QueryPerformanceCounter on
-            // Windows and PresentMon timestamps the same clock, so this is an exact frame-level join to
-            // GPUBusy / msInPresentAPI rather than a best-effort alignment on wall time.
+            // True QueryPerformanceCounter via GpuTelemetry.Qpc(), NOT Stopwatch.GetTimestamp().
+            // Under Mono the Stopwatch epoch is process-relative while reporting a 10 MHz
+            // frequency, so durations are correct but timestamps will not join against an
+            // external capture. Stamped at frame END; PresentMon's CPUStartQPC is frame
+            // START, so subtract period before matching - and match by containment in
+            // [CPUStartQPC, CPUStartQPC + FrameTime), not by nearest start. Nearest-start
+            // lands on the neighbouring ordinary frame on exactly the stall frames that
+            // matter, which reads as "the GPU was fine through the stall".
             sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
             sb.Append(",\"gcGen0\":").Append(_gcThisFrame);
             Num(sb, "t", Time.realtimeSinceStartup - _sampleStart);
