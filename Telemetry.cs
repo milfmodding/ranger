@@ -1279,6 +1279,14 @@ namespace Framesaver
             Block(sb, "gameUpdate", _gameUpdate);
             Block(sb, "jobQueue", _jobQueue);
             Block(sb, "aiTotal", _aiTotal);
+
+            // Beside aiTotal, not inside it: this is BotOwner.UpdateManual, which
+            // aiTotal (BotsController.method_0) does not contain. Sums over the
+            // window, not a distribution - the quantity wanted is a per-call mean
+            // per bucket, so the divisor has to travel with the total.
+            sb.Append(",\"updateManual\":");
+            Framesaver.Patches.UpdateManualTiming.Append(sb);
+
             Block(sb, "jobSchedulerLate", _jobSched);
             Block(sb, "ambientLight", _ambientLight);
             Block(sb, "asyncUpdateDrain", _asyncUpdate);
@@ -1942,6 +1950,7 @@ namespace Framesaver
             SpawnAttempts.ResetWindow();
             AsyncDrain.ResetWindow();
             RaidInit.ResetWindow();
+            Framesaver.Patches.UpdateManualTiming.ResetWindow();
             _playerLate.Reset();
             _playerTick.Reset();
             if (_phases != null)
