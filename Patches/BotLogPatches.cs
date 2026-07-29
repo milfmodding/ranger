@@ -180,6 +180,40 @@ namespace Framesaver.Patches
             sb.Append(",\"damageType\":\"").Append(Esc(damage.DamageType.ToString())).Append('"');
             sb.Append(",\"bodyPart\":\"").Append(Esc(part.ToString())).Append('"');
 
+            // The blow's own account of who struck, beside the game's account
+            // of who is blamed. Usually the same value, so the field is cheap
+            // when they agree - but artillery is where they must not be merged:
+            // the handler can set LastAggressor from damageInfo.Player and then
+            // null it again, leaving `killer` null while `damageBy` still names
+            // someone.
+            //
+            // Emitting both makes the disagreement visible instead of decided
+            // by whichever field we happened to read. `killer` stays
+            // authoritative because it is the game's own judgement about
+            // attribution, and attribution is what "did Sophia's fight cause
+            // this" turns on.
+            string damageBy = "";
+            try
+            {
+                if (damage.Player != null && damage.Player.iPlayer != null)
+                {
+                    damageBy = damage.Player.iPlayer.ProfileId ?? "";
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            sb.Append(",\"damageBy\":");
+            if (damageBy.Length == 0)
+            {
+                sb.Append("null");
+            }
+            else
+            {
+                sb.Append('"').Append(Esc(damageBy)).Append('"');
+            }
+
             if (aggressor == null)
             {
                 sb.Append(",\"killerState\":\"none\",\"killer\":null");
@@ -327,13 +361,29 @@ namespace Framesaver.Patches
     /// trickle - passes through BotOwner.Create, so this is one patch rather
     /// than three.
     ///
-    /// The `source` field is deliberately absent: Create's signature carries no
-    /// creation data, and the bot cannot reach it afterwards either -
-    /// SpawnProfileData.SpawnParams has TriggerType and Id_spawn set only on
-    /// the wave path, and role does not discriminate because exUsec and pmcUSEC
-    /// come through the BOSS spawner without being bosses. Adding it needs a
-    /// table keyed on BotCreationDataClass identity, read at
-    /// BotSpawner.method_11. Scoped, not built, and not guessed at here.
+    /// **The `source` field is absent, and the reason is a count I got wrong
+    /// once already - do not re-derive it from the estimate.**
+    ///
+    /// Create's signature carries no creation data, and the bot cannot reach it
+    /// afterwards either: SpawnProfileData.SpawnParams has TriggerType and
+    /// Id_spawn set only on the wave path, and role does not discriminate,
+    /// because exUsec and pmcUSEC come through the BOSS spawner without being
+    /// bosses.
+    ///
+    /// The design is a table keyed on BotCreationDataClass identity, stamped at
+    /// each spawn system's entry and read at BotSpawner.method_11 where bot and
+    /// creation data are both live. I estimated three stamps. **There are nine
+    /// construction sites**: BossSpawnerClass alone builds three separate
+    /// instances - boss at :75, escorts at :291, Zryachiy's supports at :323 -
+    /// and BotSpawner builds six more (:303, :316, :402, :534, :772, :806).
+    ///
+    /// Nine sites with no way to prove the list is complete makes `unknown` the
+    /// likely majority rather than a safety net, and a source field that is
+    /// right for bosses and silently wrong for their escorts is worse than no
+    /// field, because it looks authoritative. **Not built on purpose.** The
+    /// promising route is the single funnel `BotCreationDataClass.Create`,
+    /// which all nine reach; it needs each caller checked for an intervening
+    /// await before a stamp handed to it could be trusted.
     /// </summary>
     internal class BotSpawnLogPatch : ModulePatch
     {
