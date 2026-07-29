@@ -77,6 +77,31 @@ namespace Framesaver
         private long _tickedSum;
         private long _liveSum;
 
+        // Frame times for the mark lookback, in a ring that outlives ResetWindow.
+        //
+        // A mark is pressed BECAUSE something just happened, so the frames worth dumping are the ones
+        // immediately before the press. Reading them from `_frameSamples` would lose exactly those
+        // whenever the press lands early in a window, because ResetWindow clears it - and that loss
+        // correlates with the mark being worth making rather than falling randomly. Same shape as
+        // sampling LastBrainsTicked at flush, and the reason this is a ring rather than a caveat is
+        // that a caveat has to be remembered by every future reader while a ring does not.
+        //
+        // No timestamps: frame times ARE durations, so summing backwards until the total reaches the
+        // lookback gives the span directly. 1024 frames is ~17 s at 60 fps and ~7 s at 150.
+        private readonly double[] _markRing = new double[1024];
+        private int _markNext;
+        private int _markCount;
+
+        // Not a config entry, because it cannot be set independently of the ring above: a lookback
+        // longer than 1024 frames can span would truncate silently, which is the failure the ring
+        // exists to remove.
+        private const double MarkLookbackMs = 5000d;
+
+        /// <summary>Per-raid mark counter. This is the join key to Sophia's written notes - "Factory
+        /// mark 2, mid-fight" needs the ordinal to mean anything - so it resets with the raid, not
+        /// with the window or the session.</summary>
+        private int _markOrdinal;
+
         /// <summary>Which regime a window's numbers came from. Menu is only entered once sampling has begun.</summary>
         private enum SessionState
         {
@@ -341,6 +366,7 @@ namespace Framesaver
                 // reports them forever. See ResetForRaid.
                 Framesaver.Patches.SleepingBotAnimatorPatch.ResetForRaid();
                 Framesaver.Patches.Census.ResetForRaid();
+                _markOrdinal = 0;
                 // Re-reads the file too, so editing a protocol takes effect on the next raid rather
                 // than the next launch.
                 ProtocolRunner.ResetForRaid();
@@ -407,6 +433,15 @@ namespace Framesaver
                 _flushedByProtocol = true;
                 Flush(false);
                 _nextWrite = Time.realtimeSinceStartup + Plugin.TelemetryWindow.Value;
+            }
+
+            // Deliberately does NOT flush. Every mark would otherwise close a window early, so
+            // `tickedSum`, `liveSum` and every percentile would land on a short denominator - and with
+            // marks frequent enough to be useful the whole log becomes partial windows, taking
+            // `windowSec` comparability across the entire run with them.
+            if (Plugin.MarkKey.Value.IsDown())
+            {
+                WriteMark();
             }
 
             if (Time.realtimeSinceStartup >= _nextWrite)
@@ -946,6 +981,13 @@ namespace Framesaver
                 _frameSamples.Add(frameMs);
                 _tickedSum += AICoreControllerUpdatePatch.LastBrainsTicked;
                 _liveSum += AICoreControllerUpdatePatch.LiveAgents;
+
+                _markRing[_markNext] = frameMs;
+                _markNext = (_markNext + 1) % _markRing.Length;
+                if (_markCount < _markRing.Length)
+                {
+                    _markCount++;
+                }
             }
 
             _periodSamples++;
@@ -1503,6 +1545,53 @@ namespace Framesaver
                     awake++;
                 }
             }
+        }
+
+        /// <summary>
+        /// One line per operator keypress: what the frames looked like just before she reacted.
+        ///
+        /// `spanMs` is the wall time the dump actually covers, and it is emitted rather than assumed
+        /// because it is short in two honest cases - the first seconds of a session, and a stretch so
+        /// slow that 1024 frames span less than the lookback. A short dump is not a quiet one, and
+        /// without the span there is no way to tell those apart.
+        /// </summary>
+        private void WriteMark()
+        {
+            StringBuilder sb = new StringBuilder(4096);
+            sb.Append("{\"type\":\"mark\"");
+            sb.Append(",\"mark\":").Append(++_markOrdinal);
+            sb.Append(",\"window\":").Append(_window);
+            sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
+            Num(sb, "t", Time.realtimeSinceStartup - _sampleStart);
+            sb.Append(",\"state\":\"").Append(_state.ToString().ToLowerInvariant()).Append('"');
+            AppendRaidIdentity(sb);
+            AppendRaidClock(sb);
+            AppendPosition(sb);
+
+            // Walk backwards from the newest frame, newest first, until the durations sum past the
+            // lookback or the ring runs out.
+            double span = 0d;
+            int taken = 0;
+            StringBuilder frames = new StringBuilder(3072);
+            for (int i = 0; i < _markCount && span < MarkLookbackMs; i++)
+            {
+                double ms = _markRing[(_markNext - 1 - i + _markRing.Length) % _markRing.Length];
+                if (taken > 0)
+                {
+                    frames.Append(',');
+                }
+
+                frames.Append(Fmt(ms));
+                span += ms;
+                taken++;
+            }
+
+            sb.Append(",\"frames\":").Append(taken);
+            Num(sb, "spanMs", span);
+            sb.Append(",\"frameMs\":[").Append(frames).Append(']');
+            sb.Append('}');
+            Append(sb.ToString());
+            Plugin.LogSource.LogInfo("Framesaver mark: " + taken + " frames, " + Fmt(span) + " ms");
         }
 
         private void WriteHeader()
