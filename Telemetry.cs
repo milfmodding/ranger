@@ -161,6 +161,17 @@ namespace Framesaver
         /// <summary>
         /// Raid clock, matching the readout the O key shows. Returns false outside a running raid.
         /// </summary>
+        /// <summary>
+        /// The elapsed half of the raid clock, for BotLog's event lines. False
+        /// outside a raid, which is what makes `raidElapsed: null` on a loading
+        /// spawn honest rather than a zero that looks like the first second.
+        /// </summary>
+        internal static bool TryGetRaidElapsed(out double elapsed)
+        {
+            double remaining;
+            return TryGetRaidClock(out elapsed, out remaining);
+        }
+
         private static bool TryGetRaidClock(out double elapsed, out double remaining)
         {
             elapsed = 0d;
@@ -226,6 +237,20 @@ namespace Framesaver
 
         private string _path;
         private SessionState _state = SessionState.Menu;
+
+        /// <summary>
+        /// Window ordinal and session state, mirrored as statics so BotLog can
+        /// stamp an event at the moment it happens rather than at flush.
+        ///
+        /// Mirrors rather than exposing the instance: the events must carry the
+        /// window that CONTAINED them, and stamping at drain time would assign
+        /// every event of window N to whichever window was current when the
+        /// queue happened to be emptied. The ordinal is a claim; `qpc` and
+        /// `raidElapsed` travel beside it so containment can check the claim.
+        /// </summary>
+        internal static int CurrentWindow;
+
+        internal static string CurrentStateName = "menu";
 
         /// <summary>
         /// GetInstanceID of the GameWorld a raid has actually been sampled in. See CurrentState: it is
@@ -390,6 +415,7 @@ namespace Framesaver
                 // reports them forever. See ResetForRaid.
                 Framesaver.Patches.SleepingBotAnimatorPatch.ResetForRaid();
                 Framesaver.Patches.Census.ResetForRaid();
+                Framesaver.Patches.BotLog.ResetForRaid();
                 _markOrdinal = 0;
                 // Re-reads the file too, so editing a protocol takes effect on the next raid rather
                 // than the next launch.
@@ -425,6 +451,7 @@ namespace Framesaver
                 }
 
                 _state = state;
+                CurrentStateName = state.ToString().ToLowerInvariant();
             }
 
             // Live-applied so it can be toggled mid-raid like the other experimental flags.
@@ -1572,7 +1599,12 @@ namespace Framesaver
 
             Append(sb.ToString());
 
+            // Bot spawn/death lines, flushed after the window they were stamped
+            // with so a reader meets the window before the events inside it.
+            Framesaver.Patches.BotLog.Drain(Append);
+
             _window++;
+            CurrentWindow = _window;
             ResetWindow();
         }
 
