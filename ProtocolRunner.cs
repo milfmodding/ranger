@@ -193,21 +193,42 @@ namespace Framesaver
         /// **Refuses loudly.** A key that silently does nothing is worse than no key: the operator
         /// believes the arm changed, the run continues, and nothing in the data disagrees until analysis.
         /// </summary>
+        /// <summary>
+        /// Whether a press would do anything. Advance() tests this same property rather than
+        /// re-deriving its own precondition, so the two cannot drift.
+        ///
+        /// It exists because the caller needs to flush the window BEFORE advancing: Advance()
+        /// applies the step's config, so a flush afterwards labels the closing line with the arm
+        /// about to start while its measurements describe the arm just ended. Fixing that needs
+        /// the caller to know in advance whether the press will take - and writing
+        /// `Loaded && StepIndex < StepCount` at the call site would be a copy of this line that
+        /// goes stale the first time the protocol grows a rule. Same reason the unknown-key
+        /// refusal exists: a second statement of a rule is a second place for it to be wrong.
+        /// </summary>
+        public static bool CanAdvance
+        {
+            get { return Loaded && StepIndex < Steps.Count; }
+        }
+
         public static bool Advance()
         {
-            if (!Loaded)
+            // One precondition, checked once. The two messages below only explain a refusal -
+            // they never decide it, which is what stops them drifting from CanAdvance.
+            if (!CanAdvance)
             {
-                Plugin.LogSource.LogError(
-                    "Framesaver: protocol key pressed but no protocol is loaded"
-                    + (Failure.Length > 0 ? " (" + Failure + ")" : " - expected " + Path)
-                    + ". Nothing changed.");
-                return false;
-            }
+                if (!Loaded)
+                {
+                    Plugin.LogSource.LogError(
+                        "Framesaver: protocol key pressed but no protocol is loaded"
+                        + (Failure.Length > 0 ? " (" + Failure + ")" : " - expected " + Path)
+                        + ". Nothing changed.");
+                }
+                else
+                {
+                    Plugin.LogSource.LogWarning("Framesaver: protocol '" + Name + "' is finished at step "
+                                                + StepIndex + " of " + Steps.Count + ". Nothing changed.");
+                }
 
-            if (StepIndex >= Steps.Count)
-            {
-                Plugin.LogSource.LogWarning("Framesaver: protocol '" + Name + "' is finished at step "
-                                            + StepIndex + " of " + Steps.Count + ". Nothing changed.");
                 return false;
             }
 
