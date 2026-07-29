@@ -428,7 +428,7 @@ namespace Framesaver
 
             // Before the ordinary roll below, so a press and a timed boundary in the same frame produce
             // one flush rather than two - the second would be an empty window.
-            if (Plugin.ProtocolKey.Value.IsDown() && ProtocolRunner.Advance())
+            if (Pressed(Plugin.ProtocolKey.Value) && ProtocolRunner.Advance())
             {
                 _flushedByProtocol = true;
                 Flush(false);
@@ -439,7 +439,7 @@ namespace Framesaver
             // `tickedSum`, `liveSum` and every percentile would land on a short denominator - and with
             // marks frequent enough to be useful the whole log becomes partial windows, taking
             // `windowSec` comparability across the entire run with them.
-            if (Plugin.MarkKey.Value.IsDown())
+            if (Pressed(Plugin.MarkKey.Value))
             {
                 WriteMark();
             }
@@ -1545,6 +1545,44 @@ namespace Framesaver
                     awake++;
                 }
             }
+        }
+
+        /// <summary>
+        /// Main key went down this frame and every configured modifier is held.
+        ///
+        /// **Not `KeyboardShortcut.IsDown()`, which additionally requires that NOTHING ELSE is held.**
+        /// BepInEx's type summary is explicit - *"will trigger only if user presses and holds only
+        /// LeftCtrl... if any other keys are pressed, the shortcut will not trigger"* - and
+        /// `ModifierKeyTest` walks every keycode to enforce it. Its `IsDown` method summary says only
+        /// "main key pressed, modifiers held" and omits the exclusion, which is how both keys shipped
+        /// on it.
+        ///
+        /// The cost was measured, not theorised: of four mark presses in the first marathon, the only
+        /// ones that fired were the ones made standing still. Every press while W was held vanished -
+        /// so marks registered only when stationary, **systematically excluding hitches during
+        /// movement and combat**, which are the ones we are hunting and the ones where her attention
+        /// is least able to spare a keypress. The protocol key has the same defect, and there a
+        /// swallowed press means the arm silently does not advance while every label says it did.
+        ///
+        /// Modifiers are still required, so a shortcut configured with them does not fire bare.
+        /// `GetKeyDown` is tested first, so the enumerator only allocates on a frame the key moved.
+        /// </summary>
+        private static bool Pressed(BepInEx.Configuration.KeyboardShortcut shortcut)
+        {
+            if (shortcut.MainKey == KeyCode.None || !Input.GetKeyDown(shortcut.MainKey))
+            {
+                return false;
+            }
+
+            foreach (KeyCode modifier in shortcut.Modifiers)
+            {
+                if (!Input.GetKey(modifier))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>
