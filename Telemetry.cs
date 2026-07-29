@@ -452,11 +452,26 @@ namespace Framesaver
 
             // Before the ordinary roll below, so a press and a timed boundary in the same frame produce
             // one flush rather than two - the second would be an empty window.
-            if (Pressed(Plugin.ProtocolKey.Value) && ProtocolRunner.Advance())
+            //
+            // FLUSH BEFORE ADVANCE, and the order is the whole fix. `Advance()` applies the step's
+            // config and increments the step, and `Flush` reads config live - so advancing first
+            // stamped the incoming arm's `cfg`, `agents.slicing` and `protocol.arm` onto the outgoing
+            // arm's sums. `slicing` is exactly the field a reader trusts to answer "was the lever
+            // pulled", and on that one line it answered for the wrong arm.
+            //
+            // Gated on `CanAdvance` rather than on `Advance()`'s return so the flush does not happen
+            // when nothing will change. `Advance()` tests the same property, so the two cannot drift,
+            // and it is still called unconditionally below to keep its loud refusal.
+            if (Pressed(Plugin.ProtocolKey.Value))
             {
-                _flushedByProtocol = true;
-                Flush(false);
-                _nextWrite = Time.realtimeSinceStartup + Plugin.TelemetryWindow.Value;
+                if (ProtocolRunner.CanAdvance)
+                {
+                    _flushedByProtocol = true;
+                    Flush(false);
+                    _nextWrite = Time.realtimeSinceStartup + Plugin.TelemetryWindow.Value;
+                }
+
+                ProtocolRunner.Advance();
             }
 
             if (Time.realtimeSinceStartup >= _nextWrite)
