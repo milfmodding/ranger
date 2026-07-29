@@ -1409,7 +1409,16 @@ namespace Framesaver
               .Append(",\"slicing\":").Append(slicing ? "true" : "false")
               .Append(",\"suppressSlicing\":").Append(ModCompat.SuppressSlicing ? "true" : "false")
               .Append(",\"tickedSum\":").Append(_tickedSum)
-              .Append(",\"liveSum\":").Append(_liveSum).Append('}');
+              .Append(",\"liveSum\":").Append(_liveSum);
+
+            // Which AI/co-op mods are present. Here rather than the header because the
+            // header runs in Awake, where reading ModCompat latches detection against a
+            // plugin list BepInEx has not finished filling. This block already calls
+            // SuppressSlicing two lines up, so detection is forced from this exact site
+            // regardless - the names are free, and no other site could say that.
+            sb.Append(",\"mods\":");
+            ModCompat.AppendDetected(sb);
+            sb.Append('}');
 
             float elapsed = Mathf.Max(0.001f, Time.realtimeSinceStartup - _windowStart);
 
@@ -1732,6 +1741,8 @@ namespace Framesaver
             sb.Append(",\"commit\":\"").Append(Escape(Plugin.BuildCommit)).Append('"');
             sb.Append(",\"started\":\"").Append(DateTime.Now.ToString("o", CultureInfo.InvariantCulture)).Append('"');
             AppendPlatform(sb);
+            AppendDisplay(sb);
+            AppendSystem(sb);
             sb.Append(",\"tag\":\"").Append(Escape(Plugin.RunTag.Value)).Append('"');
             sb.Append(",\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value));
             // Ticks per second for the `qpc` field on every line below. Needed to convert those stamps into
@@ -2047,6 +2058,55 @@ namespace Framesaver
             sb.Append(",\"platform\":{\"sptAssembly\":\"").Append(Escape(SptVersion()))
               .Append("\",\"game\":\"").Append(Escape(Application.version ?? ""))
               .Append("\",\"unity\":\"").Append(Escape(Application.unityVersion ?? ""))
+              .Append("\"}");
+        }
+
+        /// <summary>
+        /// **A frame cap can make goal 1 pass for reasons that have nothing to do with
+        /// this mod, and that is why this block leads the machine one.**
+        ///
+        /// A tester on 60 Hz vsync reports a p50 pinned near 16.67 ms. That clears our
+        /// `p50 >= 60 fps` criterion while being insensitive to everything Framesaver
+        /// does - so their report that it works is their monitor. It is not an ambiguous
+        /// null, it is **a false pass on the primary success criterion**, arriving in the
+        /// number we are least likely to interrogate because it agrees with us. A missing
+        /// CPU makes a comparison meaningless, which is visible; a cap makes it wrong in
+        /// our favour, which is not.
+        ///
+        /// **This is a label, not a check.** These are read once, and a mid-session vsync
+        /// toggle would not be caught. The check is in the data: a cap at refresh R
+        /// forbids any window below 1000/R, so a floor test on p50 EXCLUDES caps
+        /// (`analysis/alpha-vsync-floor.py`). Note the asymmetry - a floor can only rule
+        /// a cap out, never confirm one, because nothing below the budget separates an
+        /// uncapped machine from a slow one. Label and check, computed independently.
+        /// </summary>
+        private static void AppendDisplay(StringBuilder sb)
+        {
+            Resolution res = Screen.currentResolution;
+            sb.Append(",\"display\":{\"vSyncCount\":").Append(QualitySettings.vSyncCount)
+              .Append(",\"targetFrameRate\":").Append(Application.targetFrameRate)
+              // refreshRateRatio, not the obsolete refreshRate int: 165 Hz panels report
+              // 164 when truncated, and the floor test above compares against 1000/R.
+              .Append(",\"refreshHz\":").Append(Fmt(res.refreshRateRatio.value))
+              .Append(",\"width\":").Append(res.width)
+              .Append(",\"height\":").Append(res.height)
+              .Append(",\"fullScreenMode\":\"").Append(Escape(Screen.fullScreenMode.ToString()))
+              .Append("\"}");
+        }
+
+        /// <summary>
+        /// For an outside tester's log, p50 is a property of their machine before it is a
+        /// property of anything we did - and a bot-heavy raid is mostly main thread, so
+        /// the CPU is the term that matters. `gpuDevice` was already here; nothing
+        /// described the processor.
+        /// </summary>
+        private static void AppendSystem(StringBuilder sb)
+        {
+            sb.Append(",\"system\":{\"cpu\":\"").Append(Escape(SystemInfo.processorType ?? ""))
+              .Append("\",\"cores\":").Append(SystemInfo.processorCount)
+              .Append(",\"cpuMhz\":").Append(SystemInfo.processorFrequency)
+              .Append(",\"ramMb\":").Append(SystemInfo.systemMemorySize)
+              .Append(",\"os\":\"").Append(Escape(SystemInfo.operatingSystem ?? ""))
               .Append("\"}");
         }
 
