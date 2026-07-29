@@ -338,6 +338,30 @@ namespace Framesaver
             Framesaver.Patches.Census.Tick();
             DrainCensus();
 
+            // Both before the menu early-return, and for the same reason as the two calls above.
+            //
+            // She marked a major hitch on the intermission screen and it was lost twice over: the key
+            // was never read there, and nothing filled the ring either - so the hitch was not merely
+            // unmarked, it was unmeasured. Loading and its transitions are goal 2's secondary target
+            // and the stalls either side of that intermission ran 1.8 s and 19.9 s, so a mark carrying
+            // no frames would be the one place we most need frames.
+            //
+            // The ring takes Unity's own frame delta rather than BSG's measurer, because that is the
+            // only source that exists in every state. It follows that a mark's `frameMs` will not
+            // exactly equal `frame` or `framePct`, which are BSG's - the mark answers "what did the
+            // last five seconds feel like", not "what did the measurer record".
+            _markRing[_markNext] = Time.unscaledDeltaTime * 1000d;
+            _markNext = (_markNext + 1) % _markRing.Length;
+            if (_markCount < _markRing.Length)
+            {
+                _markCount++;
+            }
+
+            if (Pressed(Plugin.MarkKey.Value))
+            {
+                WriteMark(state);
+            }
+
             if (state == SessionState.Menu)
             {
                 // Back to the menu: close the session out rather than logging idle hideout time forever. A
@@ -433,15 +457,6 @@ namespace Framesaver
                 _flushedByProtocol = true;
                 Flush(false);
                 _nextWrite = Time.realtimeSinceStartup + Plugin.TelemetryWindow.Value;
-            }
-
-            // Deliberately does NOT flush. Every mark would otherwise close a window early, so
-            // `tickedSum`, `liveSum` and every percentile would land on a short denominator - and with
-            // marks frequent enough to be useful the whole log becomes partial windows, taking
-            // `windowSec` comparability across the entire run with them.
-            if (Pressed(Plugin.MarkKey.Value))
-            {
-                WriteMark();
             }
 
             if (Time.realtimeSinceStartup >= _nextWrite)
@@ -981,13 +996,6 @@ namespace Framesaver
                 _frameSamples.Add(frameMs);
                 _tickedSum += AICoreControllerUpdatePatch.LastBrainsTicked;
                 _liveSum += AICoreControllerUpdatePatch.LiveAgents;
-
-                _markRing[_markNext] = frameMs;
-                _markNext = (_markNext + 1) % _markRing.Length;
-                if (_markCount < _markRing.Length)
-                {
-                    _markCount++;
-                }
             }
 
             _periodSamples++;
@@ -1362,6 +1370,7 @@ namespace Framesaver
               .Append(",\"pendingRemoval\":").Append(AICoreControllerUpdatePatch.PendingRemoval)
               .Append(",\"removedTotal\":").Append(AICoreControllerUpdatePatch.RemovedTotal)
               .Append(",\"slicing\":").Append(slicing ? "true" : "false")
+              .Append(",\"suppressSlicing\":").Append(ModCompat.SuppressSlicing ? "true" : "false")
               .Append(",\"tickedSum\":").Append(_tickedSum)
               .Append(",\"liveSum\":").Append(_liveSum).Append('}');
 
@@ -1593,7 +1602,7 @@ namespace Framesaver
         /// slow that 1024 frames span less than the lookback. A short dump is not a quiet one, and
         /// without the span there is no way to tell those apart.
         /// </summary>
-        private void WriteMark()
+        private void WriteMark(SessionState state)
         {
             StringBuilder sb = new StringBuilder(4096);
             sb.Append("{\"type\":\"mark\"");
@@ -1601,7 +1610,10 @@ namespace Framesaver
             sb.Append(",\"window\":").Append(_window);
             sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
             Num(sb, "t", Time.realtimeSinceStartup - _sampleStart);
-            sb.Append(",\"state\":\"").Append(_state.ToString().ToLowerInvariant()).Append('"');
+
+            // The state passed in, not `_state`: at the menu the latched field holds whatever the last
+            // sampled regime was, so a mark on the intermission screen would claim to be in a raid.
+            sb.Append(",\"state\":\"").Append(state.ToString().ToLowerInvariant()).Append('"');
             AppendRaidIdentity(sb);
             AppendRaidClock(sb);
             AppendPosition(sb);
@@ -1644,6 +1656,17 @@ namespace Framesaver
             // the seconds an external capture reports.
             sb.Append(",\"qpcFrequency\":").Append(GpuTelemetry.QpcFrequency());
             Num(sb, "spikeEventMs", Plugin.SpikeEventMs.Value);
+
+            // What was ASKED for. The state it produces is `agents.suppressSlicing` on every window,
+            // because that one cannot be read here: `ModCompat.SuppressSlicing` calls EnsureDetected,
+            // which latches `_detected` BEFORE probing, and this runs in Awake - so reading it here
+            // would freeze the detection against a plugin list BepInEx may not have finished filling,
+            // turn the guard off for the session, and leave no trace but different AI behaviour.
+            //
+            // Named `deferToAiMods` rather than `defer` because the drain budget already emits a
+            // `defer` counter, and a name that two fields answer to makes every future probe of it
+            // useless.
+            sb.Append(",\"deferToAiMods\":").Append(Plugin.DeferToOtherAiMods.Value ? "true" : "false");
 
             // Which phases were actually expanded, resolved rather than as configured.
             //
