@@ -1692,7 +1692,11 @@ namespace Framesaver
         {
             StringBuilder sb = new StringBuilder(512);
             sb.Append("{\"type\":\"header\"");
-            sb.Append(",\"version\":\"0.1.0\"");
+            // Both derived from the assembly, never written down here. `commit` is separate from
+            // `version` rather than the SDK's "0.1.0+<sha>" blob so a reader never has to split it,
+            // and so an unstamped build reads as commit:"" instead of a version that looks whole.
+            sb.Append(",\"version\":\"").Append(Escape(Plugin.BuildVersion)).Append('"');
+            sb.Append(",\"commit\":\"").Append(Escape(Plugin.BuildCommit)).Append('"');
             sb.Append(",\"started\":\"").Append(DateTime.Now.ToString("o", CultureInfo.InvariantCulture)).Append('"');
             sb.Append(",\"tag\":\"").Append(Escape(Plugin.RunTag.Value)).Append('"');
             sb.Append(",\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value));
