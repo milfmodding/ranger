@@ -1312,6 +1312,16 @@ namespace Framesaver
                 RaidInit.Append(sb);
             }
 
+            // Raid-scoped, so it repeats every window rather than appearing once:
+            // the question "was this window's data collected under a forced
+            // garrison" is asked of every window, and a value present only in
+            // the window that observed it is a join waiting to be got wrong.
+            if (Framesaver.Patches.BossSpawnGate.Any)
+            {
+                sb.Append(",\"spawnGate\":");
+                Framesaver.Patches.BossSpawnGate.Append(sb);
+            }
+
 
             // Backup-profile system. `bailed` is the one to watch: a flush refused by the in-flight guard
             // leaves the pending list uncleared, which is the suspected source of the 75-bot requests.
