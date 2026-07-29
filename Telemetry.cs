@@ -2020,11 +2020,21 @@ namespace Framesaver
         /// count, identical to documented era-A logs. The criterion lived outside the
         /// data, in an install directory name.
         ///
-        /// `spt` comes from spt-reflection's assembly version rather than from
-        /// Chainloader.PluginInfos, and that is deliberate: this runs in Awake, where
-        /// reading the plugin list would latch ModCompat against a list BepInEx may not
-        /// have finished filling. We already reference the assembly, so it is loaded by
-        /// the time anything here runs.
+        /// **The key is `sptAssembly`, not `spt`, and the name is the documentation.**
+        /// It is spt-reflection's assembly version. That is how the ecosystem reports SPT
+        /// in practice - spt-prepatch carries the same 4.0.13.0 that BepInEx logs - but
+        /// the two are not the same fact, and **a point release that does not bump the
+        /// assembly would make a field named `spt` authoritative-looking and wrong.**
+        /// Naming it for what it reads travels with the data; a caveat in a README does
+        /// not. Same reasoning as citing a predicate rather than a line number, and the
+        /// same defect Shutter renamed `generateMs` to avoid.
+        ///
+        /// Read from the loaded assembly rather than Chainloader.PluginInfos, and that is
+        /// deliberate: this runs in Awake, where reading the plugin list would latch
+        /// ModCompat against a list BepInEx may not have finished filling - a LOGGING
+        /// change that would switch SuppressSlicing off for the session and leave no
+        /// trace but different AI behaviour. We already reference the assembly, so it is
+        /// loaded by the time anything here runs.
         ///
         /// Two client fields because EFT does not put its build where you would expect
         /// it. Assembly-CSharp reports 0.0.0.0, and EFT stamps its own build string into
@@ -2034,7 +2044,7 @@ namespace Framesaver
         /// </summary>
         private static void AppendPlatform(StringBuilder sb)
         {
-            sb.Append(",\"platform\":{\"spt\":\"").Append(Escape(SptVersion()))
+            sb.Append(",\"platform\":{\"sptAssembly\":\"").Append(Escape(SptVersion()))
               .Append("\",\"game\":\"").Append(Escape(Application.version ?? ""))
               .Append("\",\"unity\":\"").Append(Escape(Application.unityVersion ?? ""))
               .Append("\"}");
