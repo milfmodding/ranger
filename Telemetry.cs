@@ -1256,7 +1256,9 @@ namespace Framesaver
 
             int awake = 0;
             int asleep = 0;
-            CountBots(ref awake, ref asleep);
+            int exempt = 0;
+            int roleUnknown = 0;
+            CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown);
 
             StringBuilder sb = new StringBuilder(512);
             sb.Append("{\"type\":\"sample\"");
@@ -1369,7 +1371,9 @@ namespace Framesaver
             sb.Append(",\"bots\":{\"awake\":").Append(awake)
               .Append(",\"asleep\":").Append(asleep)
               .Append(",\"total\":").Append(awake + asleep)
-              .Append(",\"animCulled\":").Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame).Append('}');
+              .Append(",\"animCulled\":").Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame)
+              .Append(",\"exempt\":").Append(exempt)
+              .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
 
             // `slicing` is the EFFECTIVE state, not the requested one, and it is the same expression the
             // patch branches on at AICoreControllerUpdatePatch.cs:64 rather than a re-derivation of it.
@@ -1530,7 +1534,20 @@ namespace Framesaver
             ResetWindow();
         }
 
-        private static void CountBots(ref int awake, ref int asleep)
+        /// <summary>
+        /// Awake/asleep, plus the split of WHY a bot is awake.
+        ///
+        /// `awake` conflates two populations - awake because a human is near, and awake because the
+        /// role cannot stand by at all - and until now nothing could tell them apart. That difference
+        /// was the whole story of Lighthouse, which floors at 14 of 29 awake where other maps floor at
+        /// 0-2, with only one of the 14 a sniper exemption.
+        ///
+        /// `roleUnknown` is emitted rather than folded into `exempt` because `RoleAllowsStandBy`
+        /// answers `false` both for "this role may not stand by" and for "the role could not be read".
+        /// Counting those together would put unknowns inside a number named for something else. If it
+        /// is always 0 it costs one field and proves `exempt` is clean.
+        /// </summary>
+        private static void CountBots(ref int awake, ref int asleep, ref int exempt, ref int roleUnknown)
         {
             if (!Singleton<IBotGame>.Instantiated)
             {
@@ -1567,6 +1584,18 @@ namespace Framesaver
                 else
                 {
                     awake++;
+                }
+
+                // Inside the same skip as the counts above, deliberately: these describe the same
+                // population, so `exempt + roleUnknown` can be read against `awake + asleep` without
+                // asking whether the two passes saw the same bots.
+                if (!BotStandByUpdatePatch.RoleStandByKnown(bot))
+                {
+                    roleUnknown++;
+                }
+                else if (!BotStandByUpdatePatch.RoleAllowsStandBy(bot))
+                {
+                    exempt++;
                 }
             }
         }
