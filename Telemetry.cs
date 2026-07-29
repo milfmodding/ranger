@@ -1457,9 +1457,24 @@ namespace Framesaver
             // config live - so `protocol.arm`, `protocol.step`, `cfg` and `agents.slicing` all name the arm
             // ABOUT TO START while every accumulated number describes the arm that just ENDED. Being short
             // is the weaker reason to exclude it; this is the stronger one, and `slicing` is exactly the
-            // field a reader would trust as ground truth. Beta caught it. The fix is to flush before
-            // advancing, which needs a precondition ProtocolRunner can expose but does not yet - re-deriving
-            // it here would be the same silent-drift shape the protocol refuses unknown keys to avoid.
+            // field a reader would trust as ground truth. Beta caught it.
+            //
+            // FIXED, and this paragraph is kept in the past tense rather than deleted because the
+            // exclusion it justifies is still correct. `ProtocolRunner.CanAdvance` landed in e01cb0f and
+            // the call site flushes before advancing (ada1824), so a flushed line now labels the arm it
+            // measured. `flushedByProtocol` is still excluded from arm comparisons - the window is short,
+            // which is the weaker reason and the one that survives.
+            //
+            // Beta found this still written as a live defect hours after both halves shipped. A stale
+            // comment reads exactly as authoritative as a fresh one, and this one sits on the field a
+            // reader consults to decide whether the labels can be trusted: it would have had someone
+            // discard good windows, or distrust every `agents.slicing` value in the log.
+            //
+            // ALSO NOTE, because it surprised three of us: this block emits whenever `Loaded` is true,
+            // and `ResetForRaid()` calls `Load()`. From the moment the ini is on disk EVERY window of
+            // EVERY raid carries `protocol`, including legs that never press the key. `arm` is null until
+            // a step is applied, so `arm` is the field that distinguishes an applied arm from an installed
+            // file. Readers keying on the object's presence mark the whole run as protocol legs.
             if (ProtocolRunner.Loaded)
             {
                 sb.Append(",\"protocol\":{\"name\":\"").Append(Escape(ProtocolRunner.Name))
