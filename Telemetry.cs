@@ -1731,6 +1731,7 @@ namespace Framesaver
             sb.Append(",\"version\":\"").Append(Escape(Plugin.BuildVersion)).Append('"');
             sb.Append(",\"commit\":\"").Append(Escape(Plugin.BuildCommit)).Append('"');
             sb.Append(",\"started\":\"").Append(DateTime.Now.ToString("o", CultureInfo.InvariantCulture)).Append('"');
+            AppendPlatform(sb);
             sb.Append(",\"tag\":\"").Append(Escape(Plugin.RunTag.Value)).Append('"');
             sb.Append(",\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value));
             // Ticks per second for the `qpc` field on every line below. Needed to convert those stamps into
@@ -2008,6 +2009,54 @@ namespace Framesaver
             }
 
             return value.ToString("0.###", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// What the numbers were measured AGAINST. Every patch, every timing and every
+        /// spawn table belongs to a specific SPT and EFT build, so pooling two versions
+        /// compares two different programs - and until now nothing in the file said
+        /// which. The undocumented `Base` log set is excluded on exactly this basis, and
+        /// **no field in those 211 windows can tell you**: they read era A on the cfg key
+        /// count, identical to documented era-A logs. The criterion lived outside the
+        /// data, in an install directory name.
+        ///
+        /// `spt` comes from spt-reflection's assembly version rather than from
+        /// Chainloader.PluginInfos, and that is deliberate: this runs in Awake, where
+        /// reading the plugin list would latch ModCompat against a list BepInEx may not
+        /// have finished filling. We already reference the assembly, so it is loaded by
+        /// the time anything here runs.
+        ///
+        /// Two client fields because EFT does not put its build where you would expect
+        /// it. Assembly-CSharp reports 0.0.0.0, and EFT stamps its own build string into
+        /// the Unity version slot - BepInEx logs "Running under Unity v0.16.9.4008" from
+        /// it. Emitting both costs two strings once per file and removes the guess about
+        /// which one is populated.
+        /// </summary>
+        private static void AppendPlatform(StringBuilder sb)
+        {
+            sb.Append(",\"platform\":{\"spt\":\"").Append(Escape(SptVersion()))
+              .Append("\",\"game\":\"").Append(Escape(Application.version ?? ""))
+              .Append("\",\"unity\":\"").Append(Escape(Application.unityVersion ?? ""))
+              .Append("\"}");
+        }
+
+        /// <summary>
+        /// Split out from AppendPlatform so it can be tested: the two Unity reads beside
+        /// it are engine ECalls and throw outside the runtime, which would make the whole
+        /// block untestable for the sake of the two fields that need it least.
+        /// </summary>
+        private static string SptVersion()
+        {
+            try
+            {
+                return typeof(SPT.Reflection.Patching.ModulePatch).Assembly.GetName().Version.ToString();
+            }
+            catch (Exception)
+            {
+                // A version we cannot read must read as absent, never as a default that
+                // looks like a real build.
+                return "";
+            }
         }
 
         private static string Escape(string value)
