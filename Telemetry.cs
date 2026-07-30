@@ -1256,8 +1256,26 @@ namespace Framesaver
                 return;
             }
 
+            // p75 added 2026-07-30, when the gate moved to p75 primary with
+            // a p99 guard. Purely additive: p50/p95/p99/p999 keep their exact
+            // meanings, so every window ever logged stays comparable on them.
+            // Before this the gate's own number was reconstructible only from
+            // a PresentMon capture, and six of nine maps have telemetry with
+            // no capture at all.
+            //
+            // These are frame TIMES. p75 of frame time is p25 of fps - the
+            // stricter-than-typical end, which is what a gate wants.
+            //
+            // DO NOT RECONCILE against analysis/alpha-fps-percentiles.py. It
+            // reads PresentMon frames with a linear-interpolated percentile;
+            // this is nearest-rank over BSG's measurer. Different source AND
+            // different estimator, so they are two instruments: a gap between
+            // them is expected rather than an error to explain away. The
+            // three maps carrying both are where that gap gets measured,
+            // before this number is trusted on the six that cannot check it.
             samples.Sort();
             sb.Append(",\"").Append(name).Append("\":{\"p50\":").Append(Fmt(Percentile(samples, 0.50)))
+              .Append(",\"p75\":").Append(Fmt(Percentile(samples, 0.75)))
               .Append(",\"p95\":").Append(Fmt(Percentile(samples, 0.95)))
               .Append(",\"p99\":").Append(Fmt(Percentile(samples, 0.99)))
               .Append(",\"p999\":").Append(Fmt(Percentile(samples, 0.999))).Append('}');
@@ -1291,7 +1309,8 @@ namespace Framesaver
             int asleep = 0;
             int exempt = 0;
             int roleUnknown = 0;
-            CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown);
+            int standByBlocked = 0;
+            CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown, ref standByBlocked);
 
             StringBuilder sb = new StringBuilder(512);
             sb.Append("{\"type\":\"sample\"");
@@ -1461,6 +1480,7 @@ namespace Framesaver
               .Append(",\"animCulledOffScreen\":")
               .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledOffScreen)
               .Append(",\"exempt\":").Append(exempt)
+              .Append(",\"standByBlocked\":").Append(standByBlocked)
               .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
 
             // `slicing` is the EFFECTIVE state, not the requested one, and it is the same expression the
@@ -1639,12 +1659,27 @@ namespace Framesaver
               // from a run that measured zero.
               .Append(",\"drainInUpdateOnly\":").Append(Bool(Plugin.DrainInUpdateOnly.Value))
               .Append(",\"drainDiagnostics\":").Append(Bool(Plugin.AsyncDrainDiagnostics.Value))
-              // Both distances, not the sleep one plus a rule for deriving the
-              // other: the wake distance comes from the global hysteresis
-              // band, and neither global distance is in this block, so a
-              // reader could not reconstruct it. `roleSleepDist` is the
-              // EFFECTIVE value and reads 0 when the rule is configured off,
-              // so it can never claim a distance the bots did not get.
+              // The two globals every distance below is measured against.
+              // They are in the header `config` block too, but that is
+              // written once at session start and both are live-editable -
+              // which is the whole reason this block exists.
+              //
+              // A SETTING, NOT AN OUTCOME. Both are stamped onto a bot once,
+              // by BotStandByInitPointsPatch, so an edit mid-raid reaches
+              // only bots activating after it while this field still reads
+              // uniform over a mixed population. It says what was configured
+              // during this window, never what the bots on the field carry.
+              // The same caveat applies to the three role keys below.
+              .Append(",\"sleepDistance\":").Append(Fmt(Plugin.SleepDistance.Value))
+              .Append(",\"wakeDistance\":").Append(Fmt(Plugin.WakeDistance.Value))
+              // Both distances, not the sleep one plus a rule for deriving
+              // the other: the wake distance comes from the global
+              // hysteresis band. The globals arrived above only on
+              // 2026-07-30, after these; these stay absolute regardless,
+              // because a derived field is a second place for the rule to
+              // be wrong. `roleSleepDist` is the EFFECTIVE value and reads 0
+              // when the rule is configured off, so it can never claim a
+              // distance the bots did not get.
               .Append(",\"roleSleepDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.Effective))
               .Append(",\"roleWakeDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.EffectiveWake))
               .Append(",\"bossGroupWake\":").Append(Bool(Plugin.KeepBossGroupsAwake.Value));
@@ -1682,8 +1717,16 @@ namespace Framesaver
         /// answers `false` both for "this role may not stand by" and for "the role could not be read".
         /// Counting those together would put unknowns inside a number named for something else. If it
         /// is always 0 it costs one field and proves `exempt` is clean.
+        ///
+        /// `exempt` and `standByBlocked` are a declared property and its
+        /// observed consequence, and the pair only exists because reading one
+        /// for the other misled us once. Neither replaces the other: `exempt`
+        /// answers "which roles say no", `standByBlocked` answers "which bots
+        /// the pump actually refused". A config that overrides the consequence
+        /// moves only the second.
         /// </summary>
-        private static void CountBots(ref int awake, ref int asleep, ref int exempt, ref int roleUnknown)
+        private static void CountBots(ref int awake, ref int asleep, ref int exempt, ref int roleUnknown,
+                                      ref int standByBlocked)
         {
             if (!Singleton<IBotGame>.Instantiated)
             {
@@ -1732,6 +1775,22 @@ namespace Framesaver
                 else if (!BotStandByUpdatePatch.RoleAllowsStandBy(bot))
                 {
                     exempt++;
+                }
+
+                // The OUTCOME beside that declared property, added
+                // 2026-07-30. `exempt` reads the role's Mind.CAN_STAND_BY;
+                // this reads the flag the pump actually gates on, at
+                // BotStandByUpdatePatch:117. "Force for all roles" overrides
+                // the second and not the first, so under that flag `exempt`
+                // legitimately stays at 6-9 while this should fall to ~0.
+                // `exempt` holding at 6-9 was read once as the feature
+                // failing, when it was the only indicator that could not
+                // move. Whatever is left here is a bot something cleared
+                // AFTER our InitPoints postfix - which is what ReclaimStandBy
+                // exists for and has never been directly countable.
+                if (!bot.StandBy.CanDoStandBy)
+                {
+                    standByBlocked++;
                 }
             }
         }
