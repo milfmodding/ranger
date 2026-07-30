@@ -1309,8 +1309,10 @@ namespace Framesaver
             int asleep = 0;
             int exempt = 0;
             int roleUnknown = 0;
+            int deadAwake = 0;
             int standByBlocked = 0;
-            CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown, ref standByBlocked);
+            CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown, ref standByBlocked,
+                      ref deadAwake);
 
             StringBuilder sb = new StringBuilder(512);
             sb.Append("{\"type\":\"sample\"");
@@ -1479,6 +1481,13 @@ namespace Framesaver
               // is the fraction of the feature that is real.
               .Append(",\"animCulledOffScreen\":")
               .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledOffScreen)
+              // Corpses stay on the roster and keep StandByType_1 == active, so
+              // they are inside `awake` above. Beside, never instead: `awake`
+              // keeps the meaning it has in all 24 logs, and this is the term
+              // that makes it subtractable. Gamma's reader had corpses above
+              // AND below its ratio line, partly cancelling, which is worse
+              // than either alone because it looks like a smaller error.
+              .Append(",\"deadAwake\":").Append(deadAwake)
               .Append(",\"exempt\":").Append(exempt)
               .Append(",\"standByBlocked\":").Append(standByBlocked)
               .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
@@ -1726,6 +1735,7 @@ namespace Framesaver
         /// moves only the second.
         /// </summary>
         private static void CountBots(ref int awake, ref int asleep, ref int exempt, ref int roleUnknown,
+                                      ref int deadAwake,
                                       ref int standByBlocked)
         {
             if (!Singleton<IBotGame>.Instantiated)
@@ -1763,6 +1773,16 @@ namespace Framesaver
                 else
                 {
                     awake++;
+
+                    // Inside the awake branch, so it is exactly the term to
+                    // subtract from `awake` and never a fourth population. A
+                    // corpse keeps StandByType_1 == active and stays on the
+                    // roster, so it has been counted awake in every log we
+                    // have.
+                    if (bot.IsDead)
+                    {
+                        deadAwake++;
+                    }
                 }
 
                 // Inside the same skip as the counts above, deliberately: these describe the same
