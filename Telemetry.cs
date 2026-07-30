@@ -1417,6 +1417,12 @@ namespace Framesaver
               .Append(",\"asleep\":").Append(asleep)
               .Append(",\"total\":").Append(awake + asleep)
               .Append(",\"animCulled\":").Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame)
+              // What we MARKED, then what Unity actually culled. Beside, never
+              // instead: animCulled keeps the meaning it has in every existing log,
+              // so nothing in the corpus changes meaning retroactively. The ratio
+              // is the fraction of the feature that is real.
+              .Append(",\"animCulledOffScreen\":")
+              .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledOffScreen)
               .Append(",\"exempt\":").Append(exempt)
               .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
 
