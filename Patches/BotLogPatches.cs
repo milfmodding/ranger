@@ -106,6 +106,63 @@ namespace Framesaver.Patches
             _subscribed = true;
         }
 
+        /// <summary>
+        /// The stand-by permission a bot was actually granted, written where
+        /// the grant is DECIDED rather than where the bot is created.
+        ///
+        /// **`botSpawn.canStandBy` cannot answer this and never could.**
+        /// `BotOwner.Create` is a static factory at `BotOwner.cs:1033`;
+        /// `InitPoints` runs at `:1772`, inside `method_10` - the activation
+        /// path. So when the spawn line is written the grant has not been
+        /// decided, and the only thing available at that site was the role's
+        /// declared `Mind.CAN_STAND_BY`. Property, not outcome, in the field
+        /// that looked like it would answer.
+        ///
+        /// Why it matters more than tidiness: `forceAllRoles` is granted once
+        /// at activation and never revoked, so **a bot carries its assignment
+        /// for its whole life.** That makes a window-level contrast a mixture
+        /// of bots assigned at different times, and a BOT-level contrast clean
+        /// - but only if the assignment is recorded. Unrecorded, the latch is
+        /// fatal; recorded, it is the property that makes the design work.
+        ///
+        /// `roleAllows` sits beside `effective`, never instead: under
+        /// `forceAllRoles` a bot reads false on the property while holding a
+        /// true grant, and that disagreement IS the measurement.
+        /// </summary>
+        internal static void StandByAssigned(BotStandBy standBy, BotOwner bot)
+        {
+            if (standBy == null || bot == null)
+            {
+                return;
+            }
+
+            StringBuilder sb = new StringBuilder(320);
+            sb.Append("{\"type\":\"botStandBy\"");
+            Common(sb, bot);
+
+            sb.Append(",\"effective\":").Append(standBy.CanDoStandBy ? "true" : "false");
+
+            sb.Append(",\"roleAllows\":");
+            if (!BotStandByUpdatePatch.RoleStandByKnown(bot))
+            {
+                sb.Append("null");
+            }
+            else
+            {
+                sb.Append(BotStandByUpdatePatch.RoleAllowsStandBy(bot) ? "true" : "false");
+            }
+
+            // The arm this bot was assigned under, on the bot's own line.
+            // cfg carries it per window, but a window is a mixture of bots
+            // assigned at different times - which is the whole reason this
+            // line exists.
+            sb.Append(",\"forced\":")
+              .Append(Plugin.ForceStandByForAllRoles.Value ? "true" : "false");
+
+            sb.Append('}');
+            Emit(sb.ToString());
+        }
+
         internal static void Spawn(BotOwner bot)
         {
             if (bot == null)
