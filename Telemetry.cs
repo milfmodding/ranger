@@ -1314,6 +1314,13 @@ namespace Framesaver
             sb.Append(",\"updateManual\":");
             Framesaver.Patches.UpdateManualTiming.Append(sb);
 
+            // Everything else here is per frame. A cost paid per TRANSITION is
+            // invisible to all of it - smeared across whichever frames held a
+            // transition, which reads as a tail rather than a level. Gross
+            // counts, so `wokenMs / woken` is the cost of one wake.
+            sb.Append(",\"standByTransitions\":");
+            Framesaver.Patches.StandByTransitions.Append(sb);
+
             Block(sb, "jobSchedulerLate", _jobSched);
             Block(sb, "ambientLight", _ambientLight);
             Block(sb, "asyncUpdateDrain", _asyncUpdate);
@@ -2033,6 +2040,7 @@ namespace Framesaver
             AsyncDrain.ResetWindow();
             RaidInit.ResetWindow();
             Framesaver.Patches.UpdateManualTiming.ResetWindow();
+            Framesaver.Patches.StandByTransitions.ResetWindow();
             _playerLate.Reset();
             _playerTick.Reset();
             if (_phases != null)
