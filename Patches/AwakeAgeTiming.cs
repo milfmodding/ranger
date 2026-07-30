@@ -72,6 +72,7 @@ namespace Framesaver.Patches
             public long Ticks;
             public int Calls;
             public float AgeAtLast;
+            public float SpanStart;
         }
 
         private static readonly Dictionary<BotOwner, Span> Live =
@@ -166,6 +167,7 @@ namespace Framesaver.Patches
             span.Ticks += ticks;
             span.Calls++;
             span.AgeAtLast = now - since;
+            span.SpanStart = since;
             Live[bot] = span;
         }
 
@@ -224,6 +226,17 @@ namespace Framesaver.Patches
         /// are that bot's own share, so the rows sum to `awakeMs - deadMs`
         /// and the pooled number stays checkable against the disaggregated
         /// one rather than being trusted.
+        ///
+        /// **`spanS` identifies the span, and a reader needs it because a
+        /// re-wake is not a continuation.** Two rows belong to the same
+        /// continuous awake period only when `id` AND `spanS` both match.
+        /// Inferring the break from a DECREASE in `awakeS` is nearly right
+        /// and fails in one direction: a bot that sleeps and wakes early in a
+        /// long window ends it OLDER than the previous row, so the reset is
+        /// invisible and two spans get regressed as one. That case is not
+        /// rare in the population the stand-by work moves, which is precisely
+        /// the population where the artefact would correlate with the
+        /// treatment.
         /// </summary>
         internal static void DrainRows(Action<string> emit, int window)
         {
@@ -258,7 +271,9 @@ namespace Framesaver.Patches
 
                 emit("{\"type\":\"botWindow\",\"window\":" + window
                      + ",\"id\":\"" + id + "\",\"role\":\"" + role
-                     + "\",\"awakeS\":"
+                     + "\",\"spanS\":"
+                     + span.SpanStart.ToString("0.##", CultureInfo.InvariantCulture)
+                     + ",\"awakeS\":"
                      + span.AgeAtLast.ToString("0.##", CultureInfo.InvariantCulture)
                      + ",\"ms\":" + Ms(span.Ticks)
                      + ",\"n\":" + span.Calls + "}");
