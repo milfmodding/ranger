@@ -66,19 +66,58 @@ namespace Framesaver.Patches
         private static readonly Dictionary<BotOwner, float> Since =
             new Dictionary<BotOwner, float>();
 
+        /// <summary>One window's calls for one bot, drained as a row.</summary>
+        private struct Span
+        {
+            public long Ticks;
+            public int Calls;
+            public float AgeAtLast;
+        }
+
+        private static readonly Dictionary<BotOwner, Span> Live =
+            new Dictionary<BotOwner, Span>();
+
+        /// <summary>
+        /// Starts an awake span, **if one is not already running.**
+        ///
+        /// Add-if-absent rather than assign, because this is driven from the
+        /// StandByType setter and not every non-paused value is a wake:
+        /// active -> goToSave -> active are all un-paused, and assigning would
+        /// reset the age of a bot that never slept. Only Ended closes a span.
+        /// </summary>
         internal static void Woke(BotOwner bot)
         {
-            if (bot != null)
-            {
-                Since[bot] = Time.realtimeSinceStartup;
-            }
+            WokeAt(bot, Time.realtimeSinceStartup);
         }
 
         internal static void Ended(BotOwner bot)
         {
-            if (bot != null)
+            // ReferenceEquals, not `== null`. BotOwner is a MonoBehaviour, so
+            // `== null` is Unity's overload and answers TRUE for a destroyed
+            // object - which would skip this Remove for exactly the bots most
+            // in need of it, leaking the entry and the graph behind it. We are
+            // asking "is there an object to key on", not "is its native peer
+            // alive", and a destroyed bot must still be removable.
+            if (!ReferenceEquals(bot, null))
             {
                 Since.Remove(bot);
+                Live.Remove(bot);
+            }
+        }
+
+        /// <summary>
+        /// Clock injected so the span logic can be driven on a bench. The
+        /// alias this closes is the expensive one: a counter that FROZE on
+        /// sleep instead of resetting would reproduce the raid's registered
+        /// "second block opens at the first block's end value" branch exactly,
+        /// and nothing after the fact could tell the instrument error from the
+        /// finding.
+        /// </summary>
+        internal static void WokeAt(BotOwner bot, float now)
+        {
+            if (!ReferenceEquals(bot, null) && !Since.ContainsKey(bot))
+            {
+                Since[bot] = now;
             }
         }
 
@@ -92,12 +131,16 @@ namespace Framesaver.Patches
         /// </summary>
         internal static void Record(BotOwner bot, long ticks)
         {
-            if (bot == null)
+            RecordAt(bot, ticks, Time.realtimeSinceStartup);
+        }
+
+        internal static void RecordAt(BotOwner bot, long ticks, float now)
+        {
+            if (ReferenceEquals(bot, null))
             {
                 return;
             }
 
-            float now = Time.realtimeSinceStartup;
             float since;
             if (!Since.TryGetValue(bot, out since))
             {
@@ -108,6 +151,22 @@ namespace Framesaver.Patches
             int bucket = Bucket(now - since);
             Ticks[bucket] += ticks;
             Calls[bucket]++;
+
+            // Per-bot as well as per-bucket, because they are different
+            // aggregations rather than one derived from the other: a bot whose
+            // age crosses a boundary mid-window has its calls SPLIT across
+            // buckets, while its row carries one age. Buckets answer the
+            // pooled relation; rows are what a within-bot slope needs, and a
+            // bucket comparison cannot give that - the arms wake different
+            // populations, so old buckets fill with exemption roles and young
+            // ones with transients, which is the composition artifact wearing
+            // the fix's clothes.
+            Span span;
+            Live.TryGetValue(bot, out span);
+            span.Ticks += ticks;
+            span.Calls++;
+            span.AgeAtLast = now - since;
+            Live[bot] = span;
         }
 
         private static int Bucket(float ageSeconds)
@@ -155,6 +214,64 @@ namespace Framesaver.Patches
 
         /// <summary>Zeroes the sums. **Does not touch Since** - an age is the
         /// quantity under test, not an accounting period.</summary>
+        /// <summary>
+        /// One line per bot per window, drained after the sample so a reader
+        /// meets the window before the rows inside it - same ordering as the
+        /// bot ledger.
+        ///
+        /// `awakeS` is the bot's age at its last call in the window, which is
+        /// the covariate a within-bot slope regresses against. `ms` and `n`
+        /// are that bot's own share, so the rows sum to `awakeMs - deadMs`
+        /// and the pooled number stays checkable against the disaggregated
+        /// one rather than being trusted.
+        /// </summary>
+        internal static void DrainRows(Action<string> emit, int window)
+        {
+            if (emit == null)
+            {
+                Live.Clear();
+                return;
+            }
+
+            foreach (KeyValuePair<BotOwner, Span> entry in Live)
+            {
+                Span span = entry.Value;
+                string id = "";
+                string role = "";
+
+                try
+                {
+                    BotOwner bot = entry.Key;
+                    if (!ReferenceEquals(bot, null))
+                    {
+                        id = bot.ProfileId ?? "";
+                        if (bot.Profile != null && bot.Profile.Info != null)
+                        {
+                            role = bot.Profile.Info.Settings.Role.ToString();
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    // Identity is context; the numbers are the measurement.
+                }
+
+                emit("{\"type\":\"botWindow\",\"window\":" + window
+                     + ",\"id\":\"" + id + "\",\"role\":\"" + role
+                     + "\",\"awakeS\":"
+                     + span.AgeAtLast.ToString("0.##", CultureInfo.InvariantCulture)
+                     + ",\"ms\":" + Ms(span.Ticks)
+                     + ",\"n\":" + span.Calls + "}");
+            }
+
+            Live.Clear();
+        }
+
+        /// <summary>
+        /// Zeroes the sums. **Does not touch Since** - an age is the quantity
+        /// under test, not an accounting period. Live is cleared by DrainRows
+        /// instead, so a drain that never ran cannot silently lose its rows.
+        /// </summary>
         public static void ResetWindow()
         {
             Array.Clear(Ticks, 0, Ticks.Length);
@@ -164,6 +281,7 @@ namespace Framesaver.Patches
         internal static void ResetForRaid()
         {
             Since.Clear();
+            Live.Clear();
             ResetWindow();
         }
     }
