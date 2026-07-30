@@ -61,6 +61,8 @@ namespace Framesaver.Patches
         /// </summary>
         private static int _unstampedCalls;
 
+        private static int _deadCalls;
+
         internal static void Add(long ticks, bool paused)
         {
             if (paused)
@@ -79,6 +81,26 @@ namespace Framesaver.Patches
             _unstampedCalls++;
         }
 
+        /// <summary>
+        /// Calls made by a bot that is already dead, which is a SUBSET of the
+        /// counts above rather than a fourth bucket - the ticks are still in
+        /// awakeMs, so no existing log changes meaning.
+        ///
+        /// They are awake by every test we have: BotsClass.UpdateByUnity ticks
+        /// every bot on its roster with no liveness check, and a corpse keeps
+        /// StandByType_1 == active. Their cost is near zero because the guard
+        /// inside UpdateManual drops them, so they dilute awakeMs/awakeCalls
+        /// downward and the dilution grows with the body count.
+        ///
+        /// Subtract before quoting a per-bot cost. A raid that ran long with
+        /// many deaths is not cheaper per live bot than a short one - it has
+        /// more corpses in the denominator.
+        /// </summary>
+        internal static void AddDead()
+        {
+            _deadCalls++;
+        }
+
         public static void Append(StringBuilder sb)
         {
             sb.Append("{\"awakeMs\":").Append(Ms(_awakeTicks))
@@ -86,6 +108,7 @@ namespace Framesaver.Patches
               .Append(",\"pausedMs\":").Append(Ms(_pausedTicks))
               .Append(",\"pausedCalls\":").Append(_pausedCalls)
               .Append(",\"unstampedCalls\":").Append(_unstampedCalls)
+              .Append(",\"deadCalls\":").Append(_deadCalls)
               .Append('}');
         }
 
@@ -108,6 +131,7 @@ namespace Framesaver.Patches
             _awakeCalls = 0;
             _pausedCalls = 0;
             _unstampedCalls = 0;
+            _deadCalls = 0;
         }
     }
 
@@ -163,12 +187,31 @@ namespace Framesaver.Patches
             long ticks = Stopwatch.GetTimestamp() - start;
             UpdateManualTiming.Add(ticks, paused);
 
-            // Awake calls only - a paused bot has no continuous-awake age, and
-            // charging its calls to one would be the ramp's own denominator
-            // measuring the thing that resets it. Attributed AFTER the stamp
-            // is taken, so the dictionary lookup cannot contaminate the number
-            // it is bucketing.
-            if (!paused)
+            // **Corpses tick too, and they read as awake.** BotsClass.
+            // UpdateByUnity calls UpdateManual on every bot in its set with no
+            // liveness test - the guard is INSIDE UpdateManual, so this
+            // postfix has already run by the time it fails. A dead bot keeps
+            // StandByType_1 == active (the census caught one still saying so
+            // ten seconds after death), so it lands in the awake bucket at
+            // near-zero cost for as long as it stays on the roster.
+            //
+            // Counted, never silently dropped: deadCalls is a SUBSET of
+            // awakeCalls, so every existing log keeps the meaning it had and
+            // the contamination becomes measurable instead of arriving as a
+            // surprise in the ramp.
+            bool dead = __instance != null && __instance.IsDead;
+            if (dead)
+            {
+                UpdateManualTiming.AddDead();
+            }
+
+            // Age is excluded outright rather than counted, because a corpse
+            // has no meaningful continuous-awake age and would land in a
+            // bucket either way it is handled: Ended() drops it on death, so
+            // Record would re-stamp it at age 0 and pile near-zero costs into
+            // the YOUNGEST bucket - making young bots look cheap and inverting
+            // the very finding this instrument exists to test.
+            if (!paused && !dead)
             {
                 AwakeAge.Record(__instance, ticks);
             }
