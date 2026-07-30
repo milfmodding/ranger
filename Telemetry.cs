@@ -1659,6 +1659,12 @@ namespace Framesaver
             // with so a reader meets the window before the events inside it.
             Framesaver.Patches.BotLog.Drain(Append);
 
+            // Per-bot rows for the same window. Buckets answer the pooled
+            // relation; these are what a WITHIN-bot age slope needs, because
+            // the arms wake different populations and a bucket comparison
+            // would carry that composition difference into the slope.
+            Framesaver.Patches.AwakeAge.DrainRows(Append, _window);
+
             _window++;
             CurrentWindow = _window;
             ResetWindow();
