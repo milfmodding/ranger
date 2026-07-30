@@ -416,6 +416,7 @@ namespace Framesaver
                 Framesaver.Patches.SleepingBotAnimatorPatch.ResetForRaid();
                 Framesaver.Patches.Census.ResetForRaid();
                 Framesaver.Patches.BotLog.ResetForRaid();
+                Framesaver.Patches.AwakeAge.ResetForRaid();
                 _markOrdinal = 0;
                 // Re-reads the file too, so editing a protocol takes effect on the next raid rather
                 // than the next launch.
@@ -1326,6 +1327,18 @@ namespace Framesaver
             sb.Append(",\"standByTransitions\":");
             Framesaver.Patches.StandByTransitions.Append(sb);
 
+            // updateManual's cost split by how long each bot has been
+            // continuously awake. The buckets are the per-bot part: a window
+            // with one old bot and ten young ones reports them separately,
+            // which the pooled mean beside it cannot.
+            sb.Append(",\"awakeAge\":");
+            Framesaver.Patches.AwakeAge.Append(sb);
+
+            // -1 means the event's backing field could not be found, never 0.
+            // Settles unbounded-but-cheap against bounded, which timing cannot.
+            sb.Append(",\"triggerSubsMax\":")
+              .Append(Framesaver.Patches.TriggerSubscribers.Max());
+
             Block(sb, "jobSchedulerLate", _jobSched);
             Block(sb, "ambientLight", _ambientLight);
             Block(sb, "asyncUpdateDrain", _asyncUpdate);
@@ -2050,6 +2063,7 @@ namespace Framesaver
             RaidInit.ResetWindow();
             Framesaver.Patches.UpdateManualTiming.ResetWindow();
             Framesaver.Patches.StandByTransitions.ResetWindow();
+            Framesaver.Patches.AwakeAge.ResetWindow();
             _playerLate.Reset();
             _playerTick.Reset();
             if (_phases != null)

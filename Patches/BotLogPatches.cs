@@ -185,6 +185,11 @@ namespace Framesaver.Patches
                 StandByTransitions.Died(died.StandBy.StandByType_1 != BotStandByType.paused);
             }
 
+            // Ends the awake span whatever state it died in, and - the part
+            // that matters - drops the BotOwner so a bot killed while awake
+            // does not sit in that dictionary holding its whole graph.
+            AwakeAge.Ended(died);
+
             StringBuilder sb = new StringBuilder(384);
             sb.Append("{\"type\":\"death\"");
             CommonPlayer(sb, victim);
