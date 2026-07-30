@@ -1691,7 +1691,32 @@ namespace Framesaver
               // distance the bots did not get.
               .Append(",\"roleSleepDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.Effective))
               .Append(",\"roleWakeDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.EffectiveWake))
-              .Append(",\"bossGroupWake\":").Append(Bool(Plugin.KeepBossGroupsAwake.Value));
+              .Append(",\"bossGroupWake\":").Append(Bool(Plugin.KeepBossGroupsAwake.Value))
+              // Four that were in the header `config` block and not here, which
+              // is the same as not being here: the header is written once per
+              // session, and all four are live-editable.
+              //
+              // `forceAllRoles` is the live instance rather than a theoretical
+              // one. It decides which ROLES may stand by at all
+              // (BotStandByInitPointsPatch:40), so it moves bots between the
+              // awake and paused populations wholesale - raid 1.5 slept 26 of
+              // 27 under it. A third of Lighthouse's pooled frames come from
+              // that leg, and nothing on a sample line said so, so a per-map
+              // figure reads as a baseline while being part treatment arm.
+              //
+              // The comment above says an option that changes behaviour
+              // belongs here or a run cannot be told apart from the one
+              // before it. This was the largest such option and it was
+              // missing.
+              //
+              // checkInterval sets the pump rate (BotStandByUpdatePatch:107)
+              // and the sniper-exemption rebuild; sleepImmediately picks the
+              // sleep path; minBrainsPerFrame clamps the AI slice and has
+              // already fooled us once by being asked for and not applied.
+              .Append(",\"forceAllRoles\":").Append(Bool(Plugin.ForceStandByForAllRoles.Value))
+              .Append(",\"checkInterval\":").Append(Fmt(Plugin.CheckInterval.Value))
+              .Append(",\"sleepImmediately\":").Append(Bool(Plugin.SleepImmediately.Value))
+              .Append(",\"minBrainsPerFrame\":").Append(Plugin.MinBrainsPerFrame.Value);
             GcControl.AppendCfg(sb);
             sb.Append('}');
 
