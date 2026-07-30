@@ -62,6 +62,7 @@ namespace Framesaver.Patches
         private static int _unstampedCalls;
 
         private static int _deadCalls;
+        private static long _deadTicks;
 
         internal static void Add(long ticks, bool paused)
         {
@@ -96,8 +97,9 @@ namespace Framesaver.Patches
         /// many deaths is not cheaper per live bot than a short one - it has
         /// more corpses in the denominator.
         /// </summary>
-        internal static void AddDead()
+        internal static void AddDead(long ticks)
         {
+            _deadTicks += ticks;
             _deadCalls++;
         }
 
@@ -109,6 +111,7 @@ namespace Framesaver.Patches
               .Append(",\"pausedCalls\":").Append(_pausedCalls)
               .Append(",\"unstampedCalls\":").Append(_unstampedCalls)
               .Append(",\"deadCalls\":").Append(_deadCalls)
+              .Append(",\"deadMs\":").Append(Ms(_deadTicks))
               .Append('}');
         }
 
@@ -132,6 +135,7 @@ namespace Framesaver.Patches
             _pausedCalls = 0;
             _unstampedCalls = 0;
             _deadCalls = 0;
+            _deadTicks = 0L;
         }
     }
 
@@ -202,7 +206,7 @@ namespace Framesaver.Patches
             bool dead = __instance != null && __instance.IsDead;
             if (dead)
             {
-                UpdateManualTiming.AddDead();
+                UpdateManualTiming.AddDead(ticks);
             }
 
             // Age is excluded outright rather than counted, because a corpse
