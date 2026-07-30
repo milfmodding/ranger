@@ -150,7 +150,7 @@ namespace Framesaver.Patches
         }
 
         [PatchPostfix]
-        private static void Postfix(long __state)
+        private static void Postfix(BotOwner __instance, long __state)
         {
             if (__state == 0L)
             {
@@ -160,7 +160,18 @@ namespace Framesaver.Patches
 
             bool paused = __state < 0L;
             long start = paused ? -__state : __state;
-            UpdateManualTiming.Add(Stopwatch.GetTimestamp() - start, paused);
+            long ticks = Stopwatch.GetTimestamp() - start;
+            UpdateManualTiming.Add(ticks, paused);
+
+            // Awake calls only - a paused bot has no continuous-awake age, and
+            // charging its calls to one would be the ramp's own denominator
+            // measuring the thing that resets it. Attributed AFTER the stamp
+            // is taken, so the dictionary lookup cannot contaminate the number
+            // it is bucketing.
+            if (!paused)
+            {
+                AwakeAge.Record(__instance, ticks);
+            }
         }
     }
 }
