@@ -232,11 +232,13 @@ namespace Framesaver.Patches
         /// continuous awake period only when `id` AND `spanS` both match.
         /// Inferring the break from a DECREASE in `awakeS` is nearly right
         /// and fails in one direction: a bot that sleeps and wakes early in a
-        /// long window ends it OLDER than the previous row, so the reset is
-        /// invisible and two spans get regressed as one. That case is not
-        /// rare in the population the stand-by work moves, which is precisely
-        /// the population where the artefact would correlate with the
-        /// treatment.
+        /// window ends it OLDER than the previous row, so the reset is
+        /// invisible and two spans get regressed as one. **Reachable at the
+        /// default 60 s window** - age 40, sleep, wake five seconds later, and
+        /// the next close reads about 55. It needs no unusual configuration,
+        /// and the case is not rare in the population the stand-by work moves,
+        /// which is precisely the population where the artefact would
+        /// correlate with the treatment rather than falling randomly.
         /// </summary>
         internal static void DrainRows(Action<string> emit, int window)
         {
