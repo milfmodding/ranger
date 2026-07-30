@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using BepInEx.Configuration;
+using UnityEngine;
 
 namespace Framesaver
 {
@@ -33,11 +34,63 @@ namespace Framesaver
         public sealed class Step
         {
             public string Arm;
+
+            /// <summary>
+            /// How long this step runs before advancing itself, or 0 for
+            /// "wait for the key". Set by `@seconds`.
+            /// </summary>
+            public float Seconds;
+
             public readonly List<KeyValuePair<ConfigEntryBase, object>> Assignments =
                 new List<KeyValuePair<ConfigEntryBase, object>>();
         }
 
         private static readonly List<Step> Steps = new List<Step>();
+
+        /// <summary>
+        /// When the current step began, on the same clock the telemetry window
+        /// uses. 0 before the protocol is started.
+        /// </summary>
+        private static float _stepStart;
+
+        /// <summary>File-level `@seconds`, inherited by steps that do not
+        /// set their own.</summary>
+        private static float _defaultSeconds;
+
+        /// <summary>
+        /// The running step's box has elapsed, so the caller should flush and
+        /// advance exactly as if the key had been pressed.
+        ///
+        /// **Only ever true after the operator has started the protocol by
+        /// hand.** `_stepStart` is set by Advance and cleared per raid, so a
+        /// loaded protocol sitting in the menu cannot burn through its steps,
+        /// and the first arm still begins on a deliberate act. That split is
+        /// the point of the feature: the press at raid start is made calmly,
+        /// and the ones that get missed are the ones during a fight.
+        /// </summary>
+        public static bool Due
+        {
+            get
+            {
+                // _stepStart is only ever set by Advance, which has already
+                // incremented StepIndex - so a non-zero stamp means a step is
+                // running and StepSeconds describes it.
+                if (!CanAdvance || _stepStart <= 0f)
+                {
+                    return false;
+                }
+
+                float box = StepSeconds;
+                return box > 0f && Time.realtimeSinceStartup - _stepStart >= box;
+            }
+        }
+
+        /// <summary>The running step's box, for the log header. 0 when
+        /// hand-driven.</summary>
+        public static float StepSeconds
+        {
+            get { return StepIndex > 0 && StepIndex <= Steps.Count ? Steps[StepIndex - 1].Seconds : 0f; }
+        }
 
         /// <summary>True only when a protocol parsed cleanly. A partially-valid protocol is refused
         /// whole: applying half the assignments of a step would produce an arm that matches no
@@ -90,6 +143,8 @@ namespace Framesaver
             Failure = "";
             Name = "";
             StepIndex = 0;
+            _stepStart = 0f;
+            _defaultSeconds = 0f;
 
             try
             {
@@ -120,7 +175,13 @@ namespace Framesaver
                             return;
                         }
 
-                        current = new Step { Arm = line.Substring(1, close - 1).Trim() };
+                        // Inherits the file-level box, so a protocol with
+                        // uniform arms states the duration once.
+                        current = new Step
+                        {
+                            Arm = line.Substring(1, close - 1).Trim(),
+                            Seconds = _defaultSeconds,
+                        };
                         Steps.Add(current);
                         continue;
                     }
@@ -134,6 +195,23 @@ namespace Framesaver
 
                     string key = line.Substring(0, eq).Trim();
                     string value = line.Substring(eq + 1).Trim();
+
+                    // Runner directives are @-prefixed so they can never
+                    // collide with a mod setting. Config keys are readable
+                    // words ("Brain update period"), so `@` is free forever -
+                    // which matters because a bare `seconds` key would break
+                    // every protocol file on disk the day someone adds a
+                    // setting by that name. Bare `name` is still accepted; it
+                    // predates this and every existing file uses it.
+                    if (key.Length > 1 && key[0] == '@')
+                    {
+                        if (!Directive(key.Substring(1), value, current, lineNo))
+                        {
+                            return;
+                        }
+
+                        continue;
+                    }
 
                     if (current == null)
                     {
@@ -176,6 +254,7 @@ namespace Framesaver
                 }
 
                 Loaded = true;
+                WarnOnPartialWindows();
                 Plugin.LogSource.LogInfo("Framesaver protocol '" + Name + "' loaded: " + Steps.Count
                                          + " steps. Press the protocol key to start.");
             }
@@ -239,9 +318,94 @@ namespace Framesaver
             }
 
             StepIndex++;
+            _stepStart = Time.realtimeSinceStartup;
             Plugin.LogSource.LogInfo("Framesaver protocol '" + Name + "' -> step " + StepIndex + "/"
-                                     + Steps.Count + " arm '" + step.Arm + "'");
+                                     + Steps.Count + " arm '" + step.Arm + "'"
+                                     + (step.Seconds > 0f
+                                        ? " for " + step.Seconds.ToString("0.#", CultureInfo.InvariantCulture)
+                                          + "s"
+                                        : " (press to advance)"));
             return true;
+        }
+
+        /// <summary>
+        /// A runner directive - `@name`, `@seconds`.
+        ///
+        /// Unknown directives are refused rather than ignored, for exactly the
+        /// reason unknown config keys are: a typo that silently does nothing
+        /// produces a protocol that ran differently from the one written down,
+        /// and nothing in the data disagrees with the write-up.
+        /// </summary>
+        private static bool Directive(string name, string value, Step current, int lineNo)
+        {
+            if (string.Equals(name, "name", StringComparison.OrdinalIgnoreCase))
+            {
+                Name = value;
+                return true;
+            }
+
+            if (!string.Equals(name, "seconds", StringComparison.OrdinalIgnoreCase))
+            {
+                Fail("line " + lineNo + ": unknown directive '@" + name + "'");
+                return false;
+            }
+
+            float seconds;
+            if (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds)
+                || seconds < 0f)
+            {
+                Fail("line " + lineNo + ": '@seconds = " + value + "' is not a number of seconds");
+                return false;
+            }
+
+            // Before any [step] it is the file-level default; inside one it
+            // overrides for that step only.
+            if (current == null)
+            {
+                _defaultSeconds = seconds;
+            }
+            else
+            {
+                current.Seconds = seconds;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Warns when a box is not a whole number of telemetry windows.
+        ///
+        /// Not an error - a protocol is still valid and still runs. But a
+        /// 90 s box against a 60 s window gives one full window and one half
+        /// window per arm, and the half window is a sample of a different size
+        /// that averages in as though it were not. Cheaper to say at load than
+        /// to find in analysis.
+        /// </summary>
+        private static void WarnOnPartialWindows()
+        {
+            float window = Plugin.TelemetryWindow.Value;
+            if (window <= 0f)
+            {
+                return;
+            }
+
+            foreach (Step step in Steps)
+            {
+                if (step.Seconds <= 0f)
+                {
+                    continue;
+                }
+
+                float windows = step.Seconds / window;
+                if (Mathf.Abs(windows - Mathf.Round(windows)) > 0.01f)
+                {
+                    Plugin.LogSource.LogWarning(
+                        "Framesaver protocol: arm '" + step.Arm + "' is "
+                        + step.Seconds.ToString("0.#", CultureInfo.InvariantCulture)
+                        + "s against a " + window.ToString("0.#", CultureInfo.InvariantCulture)
+                        + "s window, so it ends mid-window and that arm's last sample is short.");
+                }
+            }
         }
 
         /// <summary>Reset between raids so a second raid starts the protocol from the beginning rather
@@ -249,6 +413,7 @@ namespace Framesaver
         public static void ResetForRaid()
         {
             StepIndex = 0;
+            _stepStart = 0f;
             Load();
         }
 

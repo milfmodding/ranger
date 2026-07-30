@@ -489,7 +489,12 @@ namespace Framesaver
             // Gated on `CanAdvance` rather than on `Advance()`'s return so the flush does not happen
             // when nothing will change. `Advance()` tests the same property, so the two cannot drift,
             // and it is still called unconditionally below to keep its loud refusal.
-            if (Pressed(Plugin.ProtocolKey.Value))
+            // `Due` is the same advance on a timer instead of a thumb. It
+            // routes through this branch rather than its own so the
+            // flush-before-advance ordering below is stated once - a second
+            // copy of that rule is a second place for it to be wrong, and it
+            // was wrong once already.
+            if (Pressed(Plugin.ProtocolKey.Value) || ProtocolRunner.Due)
             {
                 if (ProtocolRunner.CanAdvance)
                 {
@@ -1559,6 +1564,10 @@ namespace Framesaver
                 sb.Append(",\"protocol\":{\"name\":\"").Append(Escape(ProtocolRunner.Name))
                   .Append("\",\"step\":").Append(ProtocolRunner.StepIndex)
                   .Append(",\"steps\":").Append(ProtocolRunner.StepCount)
+                  // 0 means this arm was advanced by hand. Without it a log
+                  // cannot say whether arm boundaries were timed or thumbed,
+                  // and matched raid ages are a claim about the former.
+                  .Append(",\"stepSeconds\":").Append(Fmt(ProtocolRunner.StepSeconds))
                   .Append(",\"arm\":");
                 string arm = ProtocolRunner.Arm;
                 if (arm == null)
