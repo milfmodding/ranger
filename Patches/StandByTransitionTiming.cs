@@ -30,6 +30,13 @@ namespace Framesaver.Patches
     /// a third variable driving both churn and the tail is not excluded by
     /// stratifying on the awake level.
     ///
+    /// **These do not sum to roster change**, and the missing term is spawns.
+    /// A bot arrives awake without passing either path, so reconciling
+    /// `awake[i] - awake[i-1]` needs the ledger's `botSpawn` lines alongside
+    /// these four counters. Two instruments, deliberately - the census counts
+    /// state, the ledger counts events, and neither reads the other, so a
+    /// disagreement is a finding rather than a tautology.
+    ///
     /// **A flat, small per-transition cost does not exonerate churn**, which
     /// is worth saying because it is the obvious reading of a null result
     /// here. GClass479.method_0 subscribes to ShootData.OnTriggerPressed on
@@ -44,6 +51,8 @@ namespace Framesaver.Patches
         private static long _sleepTicks;
         private static int _woken;
         private static int _slept;
+        private static int _diedAwake;
+        private static int _diedAsleep;
 
         internal static void Woken(long ticks)
         {
@@ -57,12 +66,41 @@ namespace Framesaver.Patches
             _slept++;
         }
 
+        /// <summary>
+        /// A bot leaving the roster by dying, which is neither a wake nor a
+        /// sleep and would otherwise land in no counter at all.
+        ///
+        /// **Delta's catch, and it is the difference between a number that
+        /// reconciles and one that quietly does not.** The proxy this replaces
+        /// - |awake[i] - awake[i-1]| - moves on a death exactly as it moves on
+        /// a transition, and deaths cluster in fights, which independently
+        /// fatten the tail. So part of the churn/p99 correlation was deaths
+        /// correlating with the fights that contain them.
+        ///
+        /// Split by state because "did the missing bot die awake or asleep"
+        /// is otherwise unanswerable from this object, and diedAsleep is not
+        /// a counter that can only read zero - a sleeping bot is far from the
+        /// player, not far from other bots.
+        /// </summary>
+        internal static void Died(bool awake)
+        {
+            if (awake)
+            {
+                _diedAwake++;
+                return;
+            }
+
+            _diedAsleep++;
+        }
+
         public static void Append(StringBuilder sb)
         {
             sb.Append("{\"woken\":").Append(_woken)
               .Append(",\"wokenMs\":").Append(Ms(_wakeTicks))
               .Append(",\"slept\":").Append(_slept)
               .Append(",\"sleptMs\":").Append(Ms(_sleepTicks))
+              .Append(",\"diedAwake\":").Append(_diedAwake)
+              .Append(",\"diedAsleep\":").Append(_diedAsleep)
               .Append('}');
         }
 
@@ -82,6 +120,8 @@ namespace Framesaver.Patches
             _sleepTicks = 0L;
             _woken = 0;
             _slept = 0;
+            _diedAwake = 0;
+            _diedAsleep = 0;
         }
     }
 }
