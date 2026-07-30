@@ -1413,6 +1413,18 @@ namespace Framesaver
             GcControl.AppendWindow(sb);
 
             sb.Append(",\"snipersAwake\":").Append(LongRangeExemption.Count);
+
+            // Two numbers because one cannot tell two very different zeroes
+            // apart. `linked` says the boss/follower links formed at all -
+            // TryFindBoss runs once, from Activate, with no retry, so a boss
+            // that activates after its follower leaves the rule inert while
+            // every other number looks healthy. `heldAwake` says the rule is
+            // currently buying something. See BossGroupWake.Counts.
+            int groupLinked;
+            int groupHeld;
+            Framesaver.Patches.BossGroupWake.Counts(out groupLinked, out groupHeld);
+            sb.Append(",\"bossGroups\":{\"linked\":").Append(groupLinked)
+              .Append(",\"heldAwake\":").Append(groupHeld).Append('}');
             sb.Append(",\"bots\":{\"awake\":").Append(awake)
               .Append(",\"asleep\":").Append(asleep)
               .Append(",\"total\":").Append(awake + asleep)
@@ -1597,7 +1609,16 @@ namespace Framesaver
               // per-callback attribution at all - a run that measured nothing would be indistinguishable
               // from a run that measured zero.
               .Append(",\"drainInUpdateOnly\":").Append(Bool(Plugin.DrainInUpdateOnly.Value))
-              .Append(",\"drainDiagnostics\":").Append(Bool(Plugin.AsyncDrainDiagnostics.Value));
+              .Append(",\"drainDiagnostics\":").Append(Bool(Plugin.AsyncDrainDiagnostics.Value))
+              // Both distances, not the sleep one plus a rule for deriving the
+              // other: the wake distance comes from the global hysteresis
+              // band, and neither global distance is in this block, so a
+              // reader could not reconstruct it. `roleSleepDist` is the
+              // EFFECTIVE value and reads 0 when the rule is configured off,
+              // so it can never claim a distance the bots did not get.
+              .Append(",\"roleSleepDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.Effective))
+              .Append(",\"roleWakeDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.EffectiveWake))
+              .Append(",\"bossGroupWake\":").Append(Bool(Plugin.KeepBossGroupsAwake.Value));
             GcControl.AppendCfg(sb);
             sb.Append('}');
 
@@ -1781,6 +1802,7 @@ namespace Framesaver
             AppendPlatform(sb);
             AppendDisplay(sb);
             AppendSystem(sb);
+            AppendRoleSleep(sb);
             sb.Append(",\"tag\":\"").Append(Escape(Plugin.RunTag.Value)).Append('"');
             sb.Append(",\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value));
             // Ticks per second for the `qpc` field on every line below. Needed to convert those stamps into
@@ -2146,6 +2168,37 @@ namespace Framesaver
               .Append(",\"ramMb\":").Append(SystemInfo.systemMemorySize)
               .Append(",\"os\":\"").Append(Escape(SystemInfo.operatingSystem ?? ""))
               .Append("\"}");
+        }
+
+        /// <summary>
+        /// Which roles the posted-role distance covers.
+        ///
+        /// The distances themselves are in `cfg` on every window, because they
+        /// are live-editable; this list cannot change at runtime, so it is
+        /// written once here instead of thirteen strings per window. Without
+        /// it a log cannot say what table it ran under and we would be
+        /// inferring configuration from behaviour a week later - the same
+        /// reason `expandedPhases` is in the header rather than reconstructed
+        /// from which children appeared.
+        ///
+        /// Emitted whatever `cfg.roleSleepDist` says, so a run with the rule
+        /// switched off still records the table it would have used.
+        /// </summary>
+        private static void AppendRoleSleep(StringBuilder sb)
+        {
+            sb.Append(",\"roleSleep\":{\"roles\":[");
+            List<string> roles = Framesaver.Patches.RoleSleepDistance.RoleNames();
+            for (int i = 0; i < roles.Count; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append('"').Append(Escape(roles[i])).Append('"');
+            }
+
+            sb.Append("]}");
         }
 
         /// <summary>
