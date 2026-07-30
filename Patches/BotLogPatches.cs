@@ -173,6 +173,18 @@ namespace Framesaver.Patches
             // true.** Her own death has no matching botSpawn by construction,
             // so an unfiltered pairing reports the missed-spawn-hook signature
             // every single raid.
+            // A bot leaving the roster is neither a wake nor a sleep, so it
+            // lands in no stand-by counter unless it is counted here. Routed
+            // through AIData because that is the only handle a death event
+            // has on the BotOwner, and a null one is exactly the case we want
+            // skipped - it means the victim is Sophia.
+            IAIData ai = victim.AIData;
+            BotOwner died = ai != null ? ai.BotOwner : null;
+            if (died != null && died.StandBy != null)
+            {
+                StandByTransitions.Died(died.StandBy.StandByType_1 != BotStandByType.paused);
+            }
+
             StringBuilder sb = new StringBuilder(384);
             sb.Append("{\"type\":\"death\"");
             CommonPlayer(sb, victim);
