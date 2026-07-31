@@ -1647,7 +1647,6 @@ namespace Framesaver
               .Append(",\"standBy\":").Append(Bool(Plugin.StandByEnabled.Value))
               .Append(",\"leakFix\":").Append(Bool(Plugin.FixAgentLeak.Value))
               .Append(",\"brainPeriod\":").Append(Fmt(Plugin.BrainUpdatePeriod.Value))
-              .Append(",\"fastAnim\":").Append(Bool(Plugin.ForceFastBodyAnimator.Value))
               .Append(",\"cullSleeping\":").Append(Bool(Plugin.CullSleepingBotAnimators.Value))
               .Append(",\"maxDelta\":").Append(Fmt(Time.maximumDeltaTime))
               .Append(",\"skipLate\":").Append(Bool(Plugin.SkipSleepingLateUpdate.Value))
