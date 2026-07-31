@@ -1648,6 +1648,11 @@ namespace Framesaver
               .Append(",\"leakFix\":").Append(Bool(Plugin.FixAgentLeak.Value))
               .Append(",\"brainPeriod\":").Append(Fmt(Plugin.BrainUpdatePeriod.Value))
               .Append(",\"cullSleeping\":").Append(Bool(Plugin.CullSleepingBotAnimators.Value))
+              // Beside cullSleeping, not instead: the two select different
+              // POPULATIONS for the same mechanism, so a reader that saw only
+              // one would attribute a decoupled run's numbers to the coupled
+              // arm. animCulled follows whichever is on.
+              .Append(",\"cullAllBots\":").Append(Bool(Plugin.CullAllBotAnimators.Value))
               .Append(",\"maxDelta\":").Append(Fmt(Time.maximumDeltaTime))
               .Append(",\"skipLate\":").Append(Bool(Plugin.SkipSleepingLateUpdate.Value))
               .Append(",\"skipTick\":").Append(Bool(Plugin.SkipSleepingWorldTick.Value))
