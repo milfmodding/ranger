@@ -1481,6 +1481,14 @@ namespace Framesaver
               // is the fraction of the feature that is real.
               .Append(",\"animCulledOffScreen\":")
               .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledOffScreen)
+              // Asked / honoured / reached the engine. The first two are gated
+              // on the cull flag and this one deliberately is not, so a flag
+              // flipped off mid-session reads as a disagreement rather than as
+              // a clean arm. It is the only field in this block whose zero does
+              // NOT follow from its own feature being off - read it against
+              // animCulled, never alone.
+              .Append(",\"animCulledEngine\":")
+              .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledEngine)
               // Corpses stay on the roster and keep StandByType_1 == active, so
               // they are inside `awake` above. Beside, never instead: `awake`
               // keeps the meaning it has in all 24 logs, and this is the term
