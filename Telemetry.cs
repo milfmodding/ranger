@@ -1309,10 +1309,8 @@ namespace Framesaver
             int asleep = 0;
             int exempt = 0;
             int roleUnknown = 0;
-            int deadAwake = 0;
-            int standByBlocked = 0;
-            CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown, ref standByBlocked,
-                      ref deadAwake);
+            int standByRefused = 0;
+            CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown, ref standByRefused);
 
             StringBuilder sb = new StringBuilder(512);
             sb.Append("{\"type\":\"sample\"");
@@ -1489,15 +1487,23 @@ namespace Framesaver
               // animCulled, never alone.
               .Append(",\"animCulledEngine\":")
               .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledEngine)
-              // Corpses stay on the roster and keep StandByType_1 == active, so
-              // they are inside `awake` above. Beside, never instead: `awake`
-              // keeps the meaning it has in all 24 logs, and this is the term
-              // that makes it subtractable. Gamma's reader had corpses above
-              // AND below its ratio line, partly cancelling, which is worse
-              // than either alone because it looks like a smaller error.
-              .Append(",\"deadAwake\":").Append(deadAwake)
               .Append(",\"exempt\":").Append(exempt)
-              .Append(",\"standByBlocked\":").Append(standByBlocked)
+              // BOTH former names are RETIRED, and the good one deliberately so.
+              //
+              // `deadAwake` and `standByBlocked` were TRANSPOSED at the CountBots
+              // call site from 2026-07-30 (7e254c0 + cb47968, sibling commits
+              // each taking position 5 on opposite sides of the call), so for
+              // five days every value under `deadAwake` was this count and every
+              // value under `standByBlocked` was the dead-awake one. Both `ref
+              // int`, so it compiled silently.
+              //
+              // `standByBlocked` was a GOOD name for this quantity and is still
+              // not reused, because five days of logs carry a hard zero under it.
+              // Reuse and a reader spanning the build boundary silently mixes a
+              // structural zero with real data and cannot tell which era a window
+              // came from. A new name makes a stale reader break instead of lie.
+              // See harness/check-modoff.py's RETIRED table for both.
+              .Append(",\"standByRefused\":").Append(standByRefused)
               .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
 
             // `slicing` is the EFFECTIVE state, not the requested one, and it is the same expression the
@@ -1764,16 +1770,40 @@ namespace Framesaver
         /// Counting those together would put unknowns inside a number named for something else. If it
         /// is always 0 it costs one field and proves `exempt` is clean.
         ///
-        /// `exempt` and `standByBlocked` are a declared property and its
+        /// `exempt` and `standByRefused` are a declared property and its
         /// observed consequence, and the pair only exists because reading one
         /// for the other misled us once. Neither replaces the other: `exempt`
-        /// answers "which roles say no", `standByBlocked` answers "which bots
+        /// answers "which roles say no", `standByRefused` answers "which bots
         /// the pump actually refused". A config that overrides the consequence
         /// moves only the second.
+        ///
+        /// **THAT PAIR WAS BROKEN FROM THE DAY IT WAS WRITTEN.** The second half
+        /// was transposed with a dead-awake counter at the call site, so it
+        /// carried a hard zero for five days and anyone cross-checking the
+        /// declared property against its observed consequence was comparing
+        /// `exempt` against 0 - which reads as "the pump never refused anyone",
+        /// a clean and plausible result. A repair built for a past error,
+        /// silently disabled from birth, whose failure mode is a reassuring
+        /// number.
+        ///
+        /// The dead-awake counter that was transposed with it is GONE rather
+        /// than fixed: `BotSpawner.BotDied` sets `IsDead` and calls
+        /// `Bots.Remove` in one call, so a bot is never both dead-flagged and
+        /// on the `HashSet_0` this walks. The state is unreachable by
+        /// construction and the counter could only ever read 0.
+        /// `updateManual.deadCalls` answers the same question over the same
+        /// collection at a higher sample rate, and `harness/check-fields.py`
+        /// now FAILS if it is ever non-zero - so the tripwire fires rather than
+        /// waiting to be noticed. THE GAP, named rather than assumed away: if a
+        /// future SPT kept corpses on the roster AND added a liveness filter to
+        /// the tick loop, `deadCalls` stays 0 and only a census counter would
+        /// have seen it. Two simultaneous changes, checkable at the assembly.
+        ///
+        /// **One parameter where there were two, which is why the transposition
+        /// cannot recur here**: there is nothing left to swap it with.
         /// </summary>
         private static void CountBots(ref int awake, ref int asleep, ref int exempt, ref int roleUnknown,
-                                      ref int deadAwake,
-                                      ref int standByBlocked)
+                                      ref int standByRefused)
         {
             if (!Singleton<IBotGame>.Instantiated)
             {
@@ -1810,16 +1840,6 @@ namespace Framesaver
                 else
                 {
                     awake++;
-
-                    // Inside the awake branch, so it is exactly the term to
-                    // subtract from `awake` and never a fourth population. A
-                    // corpse keeps StandByType_1 == active and stays on the
-                    // roster, so it has been counted awake in every log we
-                    // have.
-                    if (bot.IsDead)
-                    {
-                        deadAwake++;
-                    }
                 }
 
                 // Inside the same skip as the counts above, deliberately: these describe the same
@@ -1847,7 +1867,7 @@ namespace Framesaver
                 // exists for and has never been directly countable.
                 if (!bot.StandBy.CanDoStandBy)
                 {
-                    standByBlocked++;
+                    standByRefused++;
                 }
             }
         }
