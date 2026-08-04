@@ -64,17 +64,56 @@ namespace Framesaver.Patches
         private static int _deadCalls;
         private static long _deadTicks;
 
+        /// <summary>
+        /// The single most expensive call in the window, per bucket.
+        ///
+        /// Commissioned by Delta, and the reason is that a mean over a
+        /// 30 s window cannot bound a single-frame tail: a 470 ms burst
+        /// moves awakeMs/frames by about 0.016 ms, which is invisible
+        /// beside the noise on that ratio. The sum answers "what did this
+        /// cost over the window"; nothing we emit answers "how bad was one
+        /// frame", and a stall is a one-frame event.
+        ///
+        /// WINDOW AGGREGATE, not session-cumulative. Both are reset in
+        /// ResetWindow below, and that reset is the whole classification -
+        /// a max that misses it becomes a session high-water mark that
+        /// only ever rises, which is the animCulled defect exactly.
+        ///
+        /// Both buckets rather than awake alone, though awake is the one
+        /// with the tail. A paused call runs StandBy.Update() and stops,
+        /// so pausedWorstCall should sit near pausedMs/pausedCalls; if it
+        /// ever approaches the awake figure, the entry split is wrong and
+        /// this is the only field that would say so. It costs one long.
+        ///
+        /// Calls whose prefix was skipped are NOT eligible - they have no
+        /// duration to compare. unstampedCalls is the count of those and
+        /// reads 0 in every window we have, so the max is currently over
+        /// the whole population; if that counter ever moves, this bound
+        /// becomes a bound on the timed subset and must be read as one.
+        /// </summary>
+        private static long _awakeWorstTicks;
+        private static long _pausedWorstTicks;
+
         internal static void Add(long ticks, bool paused)
         {
             if (paused)
             {
                 _pausedTicks += ticks;
                 _pausedCalls++;
+                if (ticks > _pausedWorstTicks)
+                {
+                    _pausedWorstTicks = ticks;
+                }
+
                 return;
             }
 
             _awakeTicks += ticks;
             _awakeCalls++;
+            if (ticks > _awakeWorstTicks)
+            {
+                _awakeWorstTicks = ticks;
+            }
         }
 
         internal static void AddUnstamped()
@@ -112,6 +151,8 @@ namespace Framesaver.Patches
               .Append(",\"unstampedCalls\":").Append(_unstampedCalls)
               .Append(",\"deadCalls\":").Append(_deadCalls)
               .Append(",\"deadMs\":").Append(Ms(_deadTicks))
+              .Append(",\"awakeWorstCallMs\":").Append(Ms(_awakeWorstTicks))
+              .Append(",\"pausedWorstCallMs\":").Append(Ms(_pausedWorstTicks))
               .Append('}');
         }
 
@@ -136,6 +177,8 @@ namespace Framesaver.Patches
             _unstampedCalls = 0;
             _deadCalls = 0;
             _deadTicks = 0L;
+            _awakeWorstTicks = 0L;
+            _pausedWorstTicks = 0L;
         }
     }
 
