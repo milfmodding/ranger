@@ -61,12 +61,15 @@ namespace Framesaver
         /// The running step's box has elapsed, so the caller should flush and
         /// advance exactly as if the key had been pressed.
         ///
-        /// **Only ever true after the operator has started the protocol by
-        /// hand.** `_stepStart` is set by Advance and cleared per raid, so a
-        /// loaded protocol sitting in the menu cannot burn through its steps,
-        /// and the first arm still begins on a deliberate act. That split is
-        /// the point of the feature: the press at raid start is made calmly,
-        /// and the ones that get missed are the ones during a fight.
+        /// **Only ever true after the protocol has been started - by hand, or
+        /// by AutoStartDue below.** `_stepStart` is set by Advance and cleared
+        /// per raid, so a loaded protocol sitting in the menu cannot burn
+        /// through its steps. That split is the point of the feature: the
+        /// first advance is a deliberate act made calmly, and the ones that
+        /// get missed are the ones during a fight.
+        ///
+        /// (This used to say "started by hand", which stopped being true the
+        /// day auto-start shipped. Corrected with it rather than after it.)
         /// </summary>
         public static bool Due
         {
@@ -82,6 +85,41 @@ namespace Framesaver
 
                 float box = StepSeconds;
                 return box > 0f && Time.realtimeSinceStartup - _stepStart >= box;
+            }
+        }
+
+        /// <summary>
+        /// The protocol should be started now, without waiting for a press. The CALLER supplies the
+        /// edge - this only answers "would starting now be correct", and Telemetry gates it on the
+        /// raid state.
+        ///
+        /// **`StepIndex == 0` IS THE ONCE-PER-RAID LATCH, and it needs no field of its own.** The
+        /// scoping for this feature called for a dedicated bool cleared only by ResetForRaid,
+        /// reasoning that a mid-raid Raid->Menu->Raid flicker would otherwise burn an arm. That was
+        /// solving the wrong question. The condition that matters is not "has the raid edge fired"
+        /// but "has this protocol already started", and StepIndex answers that directly:
+        ///
+        ///   - Advance() increments it, so the second call in a raid finds it non-zero and this
+        ///     returns false. At most one auto-start per protocol run, by construction.
+        ///   - ResetForRaid() sets it back to 0, so the NEXT raid re-arms - which is the same
+        ///     deliberate cross-raid reset that stops raid two inheriting raid one's position.
+        ///   - A Menu round-trip routes through that reset (Telemetry clears `_sampling` on Menu and
+        ///     re-runs the whole per-raid reset block on the way back in), so "flickered to menu and
+        ///     returned" and "started a second raid" are the SAME state here. There is no third case
+        ///     to protect against, which is why the extra field would have protected nothing.
+        ///
+        /// **It also cannot fire on a protocol that was started by hand**, for free and by the same
+        /// test - a press moves StepIndex off zero. Turning the setting on mid-raid therefore does
+        /// nothing to a run already in progress, rather than jumping it an arm.
+        /// </summary>
+        public static bool AutoStartDue
+        {
+            get
+            {
+                // CanAdvance covers `Loaded` and a step remaining, so a missing or malformed
+                // protocol file falls through to false here rather than needing its own check -
+                // and Advance() keeps its loud refusal for the hand-driven path either way.
+                return Plugin.ProtocolAutoStart.Value && CanAdvance && StepIndex == 0;
             }
         }
 

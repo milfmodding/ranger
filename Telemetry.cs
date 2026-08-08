@@ -495,7 +495,21 @@ namespace Framesaver
             // flush-before-advance ordering below is stated once - a second
             // copy of that rule is a second place for it to be wrong, and it
             // was wrong once already.
-            if (Pressed(Plugin.ProtocolKey.Value) || ProtocolRunner.Due)
+            //
+            // `AutoStartDue` is the third way in and joins here for that same
+            // reason. It is the FIRST advance rather than a later one, so it is
+            // the one case where the outgoing window is the pre-raid remnant
+            // rather than a scored arm - it flushes as `flushedByProtocol` and
+            // is dropped in analysis exactly like every other arm boundary, so
+            // it needs no special handling, only the same one.
+            //
+            // GATED ON `state` HERE, NOT INSIDE THE PROPERTY. ProtocolRunner
+            // has no view of the session and should not grow one; this method
+            // already computed `state` at the top and already keys the
+            // per-raid resets off it. Reading the raid gate at the call site
+            // keeps "what is the session doing" in the one place that knows.
+            if (Pressed(Plugin.ProtocolKey.Value) || ProtocolRunner.Due
+                || (state == SessionState.Raid && ProtocolRunner.AutoStartDue))
             {
                 if (ProtocolRunner.CanAdvance)
                 {
