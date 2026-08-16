@@ -215,7 +215,7 @@ namespace Framesaver.Patches
         /// separates it, which is why state `none` carries a cause and is
         /// informative rather than merely absent.
         /// </summary>
-        private static void Death(Player victim, IPlayer aggressor, DamageInfoStruct damage, EBodyPart part)
+        private static void Death(Player victim, IPlayer aggressor, EFT.Ballistics.DamageInfo damage, EBodyPart part)
         {
             if (victim == null)
             {
@@ -239,7 +239,7 @@ namespace Framesaver.Patches
             BotOwner died = ai != null ? ai.BotOwner : null;
             if (died != null && died.StandBy != null)
             {
-                StandByTransitions.Died(died.StandBy.StandByType_1 != BotStandByType.paused);
+                StandByTransitions.Died(died.StandBy.standByType != BotStandByType.paused);
             }
 
             // Ends the awake span whatever state it died in, and - the part

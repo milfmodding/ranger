@@ -182,7 +182,7 @@ namespace Framesaver
                 return false;
             }
 
-            GameTimerClass timer = Singleton<AbstractGame>.Instance.GameTimer;
+            EFT.GameTimer timer = Singleton<AbstractGame>.Instance.GameTimer;
             if (timer == null || timer.StartDateTime == null)
             {
                 return false;
@@ -979,7 +979,7 @@ namespace Framesaver
             // diagnostics work regardless, and they are what the pre-raid data is for.
             SamplePosition();
 
-            GClass1357 m = Singleton<GClass1357>.Instantiated ? Singleton<GClass1357>.Instance : null;
+            UnityDiagnostics.FrameMeasurer m = Singleton<UnityDiagnostics.FrameMeasurer>.Instantiated ? Singleton<UnityDiagnostics.FrameMeasurer>.Instance : null;
             double gameUpdate = 0d;
 
             if (m != null)
@@ -1859,7 +1859,7 @@ namespace Framesaver
                     continue;
                 }
 
-                if (bot.StandBy.StandByType_1 == BotStandByType.paused)
+                if (bot.StandBy.standByType == BotStandByType.paused)
                 {
                     asleep++;
                 }
