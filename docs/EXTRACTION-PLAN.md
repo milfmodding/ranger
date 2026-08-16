@@ -114,6 +114,37 @@ both the production and test level) as their own commit. `ProtocolRunner.cs` wai
 migration plan, staged with the `Telemetry.cs` surgery since both are "real work" commits rather
 than mechanical ones.
 
+## The real blocker, found while trying to delete the moved files from Framesaver (2026-08-16, late)
+
+Copying `PlayerLoopProfiler.cs` and `GpuTelemetry.cs` into Ranger (with history) was the easy half.
+Deleting them from Framesaver turns out not to be safe yet, and the reason matters for how the rest
+of this extraction has to go.
+
+**Framesaver's `Plugin.cs` and `Telemetry.cs` call these classes BY NAME, directly, unqualified**
+(`PlayerLoopProfiler.Install()`, `GpuTelemetry.Sample()`, etc. — dozens of call sites, confirmed by
+grep). There is no abstraction between Framesaver and these classes today; `TelemetryBus` is a
+design, not code that exists yet. So the only way to delete the source files from Framesaver and
+keep it compiling is to give `Framesaver.csproj` an actual project/assembly reference to
+`Ranger.dll` — which in .NET/BepInEx is a HARD load-time dependency: if `Ranger.dll` is missing,
+`Framesaver.dll` fails to load AT ALL, not just the telemetry parts. That is exactly the outcome
+Sophia said she does not want (room, 2026-08-16 23:03Z: "I don't want Ranger to be a hard
+requirement for Framesaver").
+
+**The actual sequencing this implies**: the `TelemetryBus` indirection layer (or an equivalent
+soft-load mechanism) has to be BUILT AND WIRED INTO every one of these call sites BEFORE any
+source file still called directly from Framesaver can be deleted from Framesaver — not after, and
+not alongside as a nice-to-have. Until that wiring exists, the honest state is: Ranger holds a
+second COPY of `PlayerLoopProfiler.cs`/`GpuTelemetry.cs` with real history, Framesaver still holds
+and runs its own originals, and the two are not yet the same object. That is not the finished
+extraction, but it is not wrong or unsafe either — both mods build and run independently right now,
+nothing is broken, and no half-migrated state has shipped.
+
+**Stopping here for tonight rather than building the bus under time pressure.** The bus is real
+work — a static class, a load-order-safe `Enabled` latch, and rewriting every one of Framesaver's
+direct calls (`PlayerLoopProfiler.X`, `GpuTelemetry.X`, and eventually the `Telemetry.cs` surgery's
+own three shipping-class coupling points) to go through it. Worth doing carefully in its own
+session rather than rushed at the end of a long one where two design corrections already happened.
+
 ## Risks carried in from the design draft (still apply)
 
 - The untracked-six problem class: use `git mv`, not delete+recreate, so history follows.

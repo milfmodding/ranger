@@ -57,6 +57,15 @@ namespace Ranger
             Unavailable,
         }
 
+        /// <summary>
+        /// Stopwatch ticks to milliseconds. Split out of Framesaver's AiTickTimingPatches.cs rather than
+        /// referencing it, per Sophia's 2026-08-16 23:03Z call that Ranger should not need Framesaver
+        /// installed, nor should Framesaver need a hard dependency back on Ranger for one line of math -
+        /// AiTickTimingPatches.cs stayed in Framesaver because Telemetry.cs still reads its stateful
+        /// AiTiming.TotalMs, unmoved as of this commit.
+        /// </summary>
+        private static double TickMs(long ticks) => ticks * 1000d / System.Diagnostics.Stopwatch.Frequency;
+
         // ---- wall clock ---------------------------------------------------------------------
 
         [DllImport("kernel32.dll")]
@@ -263,7 +272,7 @@ namespace Ranger
                 long start = Stopwatch.GetTimestamp();
                 ulong total, budget, used;
                 camera.GetVRamUsage(out total, out budget, out used);
-                double queryMs = AiTiming.ToMs(Stopwatch.GetTimestamp() - start);
+                double queryMs = TickMs(Stopwatch.GetTimestamp() - start);
 
                 if (queryMs > _vramQueryMsMax)
                 {
