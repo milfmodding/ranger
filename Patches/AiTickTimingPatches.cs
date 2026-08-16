@@ -18,7 +18,7 @@ namespace Framesaver.Patches
     /// </summary>
     public static class AiTiming
     {
-        /// <summary>BotsController.method_0 - the whole AI tick, driven from BaseLocalGame.Update.</summary>
+        /// <summary>BotsController.UpdateByUnity (4.0.13: method_0) - the whole AI tick, driven from BaseLocalGame.Update.</summary>
         public static double TotalMs;
 
 
@@ -35,7 +35,10 @@ namespace Framesaver.Patches
 
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(BotsController), "method_0");
+            // 4.1: was the obfuscated "method_0"; 4.1 gives it its real name. String-targeted, so the
+            // compiler cannot catch a rename - this one killed the first 4.1 raid (Enable() threw and
+            // silently dropped every registration after it, including telemetry).
+            return AccessTools.Method(typeof(BotsController), "UpdateByUnity");
         }
 
         [PatchPrefix]
