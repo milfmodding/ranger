@@ -145,6 +145,36 @@ direct calls (`PlayerLoopProfiler.X`, `GpuTelemetry.X`, and eventually the `Tele
 own three shipping-class coupling points) to go through it. Worth doing carefully in its own
 session rather than rushed at the end of a long one where two design corrections already happened.
 
+## The read-direction reframe (2026-08-16, later still)
+
+Went looking to design a "read API" so `Telemetry.cs` could pull facts back out of
+`TelemetryBus` the way `PlayerLoopProfiler`/`GpuTelemetry` currently get read directly. Checked
+which of `Telemetry.cs`'s own methods every one of those ~38 call sites sits inside, expecting a
+mix of sampler-core code and unrelated code. **It is not a mix.** Every single call site sits
+inside one of: `Update`, `Sample`, `EmitSpikeEvent`, `Flush`, `WriteHeader`, `WriteMark`,
+`WriteGridSpawnMarker`, `DrainCensus`, `OnDestroy`, `ResetWindow` — i.e. the sampler/window/
+protocol-arm lifecycle itself, not scattered elsewhere in Framesaver.
+
+That means "design a read API so `Telemetry.cs` can query `PlayerLoopProfiler`/`GpuTelemetry`
+through `TelemetryBus`" was the WRONG shape for this specific coupling. There is nothing to
+bridge: the sampler core (all of `Telemetry.cs` minus its three genuine shipping-class reads —
+`SleepingBotAnimatorPatch`/`RoleSleepDistance`/`BossGroupWake`, DESIGN.md section 1) and
+`PlayerLoopProfiler`/`GpuTelemetry` are ONE COHESIVE UNIT that happens to be split across two
+files today. This is exactly what Sophia's ruling already said ("Ranger should own the whole
+loop", 22:18Z) — confirmed now at the level of individual call sites rather than as a design
+preference. `TelemetryBus`'s `Count`/`Event`/`Tag`/`TryGet*` surface is still correct for the
+THREE shipping-class reads, which are a genuinely different relationship (external features
+publishing facts INTO the sampler, not the sampler's own internals talking to itself).
+
+**Revised plan**: move the sampler core (`Telemetry.cs` minus the 3 shipping-class touch
+points) to Ranger as ONE UNIT alongside `PlayerLoopProfiler`/`GpuTelemetry`, using the same
+git-filter-repo history-preserving technique. The 3 shipping-class touch points become
+`TelemetryBus.Count`/`Event`/`Tag` calls FROM `SleepingBotAnimatorPatch`/`RoleSleepDistance`/
+`BossGroupWake` (which stay in Framesaver), consumed by the now-Ranger-side sampler via
+`TryGet*`. This is smaller and more mechanical than "split `Telemetry.cs` down the middle" —
+it's "move the whole file, then cut exactly 3 threads that cross the boundary and reconnect
+them through the bus."
+
 ## Risks carried in from the design draft (still apply)
 
 - The untracked-six problem class: use `git mv`, not delete+recreate, so history follows.
