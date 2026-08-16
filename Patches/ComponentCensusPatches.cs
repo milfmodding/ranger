@@ -470,7 +470,7 @@ namespace Framesaver.Patches
 
                     if (owner.StandBy != null)
                     {
-                        standBy = owner.StandBy.StandByType_1.ToString();
+                        standBy = owner.StandBy.standByType.ToString();
                     }
                 }
             }

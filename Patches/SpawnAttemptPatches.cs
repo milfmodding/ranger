@@ -126,7 +126,7 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(BotCreationDataClass), nameof(BotCreationDataClass.Create));
+            return AccessTools.Method(typeof(BotCreationData), nameof(BotCreationData.Create));
         }
 
         [PatchPrefix]
@@ -140,11 +140,11 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            // The BotWaveDataClass overload - the normal wave path, not the boss one.
+            // The SpawnWave overload - the normal wave path, not the boss one.
             return AccessTools.Method(
                 typeof(BotSpawner),
                 nameof(BotSpawner.ActivateBotsByWave),
-                new[] { typeof(BotWaveDataClass) });
+                new[] { typeof(EFT.SpawnWave) });
         }
 
         [PatchPrefix]
