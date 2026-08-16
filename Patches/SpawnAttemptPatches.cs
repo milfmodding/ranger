@@ -200,7 +200,7 @@ namespace Framesaver.Patches
     /// The only one of these counters that represents a bot the player can actually meet.
     /// </summary>
     /// <summary>
-    /// Times BotCreatorClass.method_2 - the call that actually builds a bot, prefab and all - rather than
+    /// Times the per-bot build call - the call that actually builds a bot, prefab and all - rather than
     /// BotOwner.Create, which turned out to be a 0.2 ms leaf with at most 4 per frame and could not possibly
     /// account for the ~700 ms spawn-in Update spike.
     ///
@@ -215,8 +215,16 @@ namespace Framesaver.Patches
 
         protected override MethodBase GetTargetMethod()
         {
+            // 4.1: was TypeByName("BotCreatorClass") + "method_2" - a STRING TYPE lookup, the one
+            // shape the string-method audit never covered, and the third startup killer of the 4.1
+            // port (raid 3 died here at patch #28: TypeByName returns null with a warning rather
+            // than throwing, then AccessTools.Method(null, ...) returns null, then Enable()
+            // throws and drops everything after it, including telemetry). The type is
+            // BotCreatorClient now and method_2's shape (Profile, position-note, callback,
+            // bool, token) is CreateBot - matched by parameter shape against the 4.1 assembly.
+            // typeof+nameof from here on: compile-checked, so this class of failure is closed.
             return AccessTools.Method(
-                AccessTools.TypeByName("BotCreatorClass"), "method_2");
+                typeof(BotCreatorClient), nameof(BotCreatorClient.CreateBot));
         }
 
         [PatchPrefix]
