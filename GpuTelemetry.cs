@@ -4,12 +4,11 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using Comfort.Common;
-using Framesaver.Patches;
 using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace Framesaver
+namespace Ranger
 {
     /// <summary>
     /// GPU-side instruments. Everything else in this mod measures the main thread, which leaves the largest

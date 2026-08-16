@@ -4,7 +4,7 @@ using EFT;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger.Patches
 {
     /// <summary>
     /// Per-frame cost of the AI tick, broken into its two halves.

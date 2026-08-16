@@ -83,6 +83,37 @@ real surgery on production code Sophia must be able to maintain, not a mechanica
 touches the highest-line-count, most load-bearing file in the mod. Doing it carefully, in its
 own reviewable commit, separate from the clean-file move, is worth the extra round trip.
 
+## Test-suite coupling (found during the git-mv prep pass, 2026-08-16)
+
+My first boundary check only looked at production `.cs` cross-references. `tests/unwrap/Program.cs`
+(1,158 lines, reflection-based, loads `Framesaver.dll` and reflects into its types) is a second,
+real coupling surface I hadn't checked. Re-verified against it directly:
+
+- **`PlayerLoopProfiler` and `GpuTelemetry`: zero references anywhere in the test file.** Genuinely
+  clean cuts, confirmed both at the production-code level and the test level.
+- **`ProtocolRunner`: substantial reflection-based coverage.** The `@directives` section (around
+  line 530) reflects into `Framesaver.ProtocolRunner`'s `Directive` method, `_defaultSeconds`
+  static field, and nested `Step` type directly, plus `StripComment`/`TryParse` earlier in the
+  file. There is also a separate "every protocol file on disk, against the shipped settings"
+  section (~line 982) that walks `protocol-*.ini` files found relative to `Framesaver.csproj` and
+  validates every key against config names resolved from the loaded assembly — and a third section
+  checking that telemetry field names mentioned in protocol `.ini` prose actually appear in the
+  assembly's emitted strings (this is the check that caught a real shipped misspelling,
+  `animCullEngine` for `animCulledEngine`, per its own comment).
+
+**Consequence**: moving `ProtocolRunner.cs` is not just a `git mv` — it needs a plan for this test
+coverage too, since the whole file reflects into ONE assembly (`Framesaver.dll`) and tests a mix
+of shipping-feature and measurement-only classes together. Options, not yet decided: (a) split
+the test file along the same seam as the code move, with the Ranger-side tests loading
+`Ranger.dll` and Framesaver-side tests staying against `Framesaver.dll`; (b) keep one test program
+that loads both assemblies. Either way this is real additional work, not a pure mechanical
+follow-on to the code move — flagging it here rather than discovering it mid-move.
+
+**Sequencing decision**: move `PlayerLoopProfiler.cs` and `GpuTelemetry.cs` first (fully clean at
+both the production and test level) as their own commit. `ProtocolRunner.cs` waits for a test
+migration plan, staged with the `Telemetry.cs` surgery since both are "real work" commits rather
+than mechanical ones.
+
 ## Risks carried in from the design draft (still apply)
 
 - The untracked-six problem class: use `git mv`, not delete+recreate, so history follows.

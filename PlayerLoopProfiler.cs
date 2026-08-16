@@ -3,7 +3,7 @@ using System.Diagnostics;
 using UnityEngine;
 using UnityEngine.LowLevel;
 
-namespace Framesaver
+namespace Ranger
 {
     /// <summary>
     /// Brackets every top-level Unity player-loop phase with timing delegates.
