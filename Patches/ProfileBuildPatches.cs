@@ -53,7 +53,7 @@ namespace Framesaver.Patches
 
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Constructor(typeof(Profile), new[] { typeof(CompleteProfileDescriptorClass) });
+            return AccessTools.Constructor(typeof(Profile), new[] { typeof(EFT.ProfileDescriptor) });
         }
 
         [PatchPrefix]
@@ -89,7 +89,7 @@ namespace Framesaver.Patches
 
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(EFTInventoryClass), nameof(EFTInventoryClass.ToInventory));
+            return AccessTools.Method(typeof(EFT.InventoryDescriptor), nameof(EFT.InventoryDescriptor.ToInventory));
         }
 
         [PatchPrefix]

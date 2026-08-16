@@ -73,7 +73,18 @@ namespace Framesaver.Patches
 
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(PoolManagerClass), nameof(PoolManagerClass.LoadBundlesAndCreatePools));
+            // 4.1: PoolManagerClass survives as EFT.ObjectsFactory, and LoadBundlesAndCreatePools now has
+            // TWO overloads - disambiguate to the one taking ICollection<ResourceKey>, which is the
+            // shape this prefix reads.
+            return AccessTools.Method(
+                typeof(EFT.ObjectsFactory),
+                nameof(EFT.ObjectsFactory.LoadBundlesAndCreatePools),
+                new[]
+                {
+                    typeof(EFT.ObjectsFactory.PoolsCategory),
+                    typeof(EFT.ObjectsFactory.AssemblyType),
+                    typeof(ICollection<ResourceKey>),
+                });
         }
 
         [PatchPrefix]

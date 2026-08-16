@@ -649,7 +649,7 @@ namespace Framesaver.Patches
 
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(GClass636), nameof(GClass636.Init));
+            return AccessTools.Method(typeof(NavMeshCutController), nameof(NavMeshCutController.Init));
         }
 
         [PatchPrefix]
@@ -738,7 +738,7 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return RaidInitTargets.SoleConstructor(typeof(ZoneLeaveControllerClass));
+            return RaidInitTargets.SoleConstructor(typeof(BotZonesLeaveController));
         }
 
         [PatchPrefix]
@@ -753,7 +753,7 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(BotSettingsRepoClass), nameof(BotSettingsRepoClass.Init));
+            return AccessTools.Method(typeof(WildSpawnTypeExtension), nameof(WildSpawnTypeExtension.Init));
         }
 
         [PatchPrefix]
@@ -798,7 +798,11 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(GClass369), nameof(GClass369.Init));
+            // 4.1: was GClass369.Init - the cover library (CanShoot*/IsPointBehindEnemy shape) survives as
+            // CoverFindLibrary, but Init does not: its setup moved to the parameterless ctor. The mark now
+            // fires at construction rather than Init, which is a definitional change to segment 10 - both
+            // readings mean "cover library ready".
+            return RaidInitTargets.SoleConstructor(typeof(CoverFindLibrary));
         }
 
         [PatchPrefix]
@@ -813,7 +817,7 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return RaidInitTargets.SoleConstructor(typeof(GClass1890));
+            return RaidInitTargets.SoleConstructor(typeof(BotSpawner));
         }
 
         [PatchPrefix]
@@ -828,7 +832,7 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(AICoreControllerClass), nameof(AICoreControllerClass.Activate));
+            return AccessTools.Method(typeof(AICoreController), nameof(AICoreController.Activate));
         }
 
         [PatchPrefix]
@@ -850,7 +854,7 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return RaidInitTargets.SoleConstructor(typeof(BotCreatorClass));
+            return RaidInitTargets.SoleConstructor(typeof(BotCreatorClient));
         }
 
         [PatchPrefix]
