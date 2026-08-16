@@ -214,7 +214,7 @@ namespace Framesaver.Patches
             // this postfix could run. A counter for a state the game cannot
             // reach is a moving part that only ever reads zero.
             bool paused = __instance.StandBy != null
-                          && __instance.StandBy.StandByType_1 == BotStandByType.paused;
+                          && __instance.StandBy.standByType == BotStandByType.paused;
 
             long now = Stopwatch.GetTimestamp();
             __state = paused ? -now : now;
