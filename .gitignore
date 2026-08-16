@@ -1,0 +1,22 @@
+# Editors / tooling
+.idea
+.vs
+__pycache__/
+*.user
+*.suo
+
+# Build output.
+bin
+obj
+TestResults/
+*.pdb
+*.exe
+*.nupkg
+*.dll
+
+# Frozen build artifacts are deliberate and tracked once this repo has any -
+# see Framesaver's .gitignore for the reasoning. Mirrored here pre-emptively
+# so the convention is already right when the first artifact is taken.
+!artifacts/Ranger-*.dll
+
+artifacts/rollback/
