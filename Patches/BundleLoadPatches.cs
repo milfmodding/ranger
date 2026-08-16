@@ -74,8 +74,11 @@ namespace Framesaver.Patches
         protected override MethodBase GetTargetMethod()
         {
             // 4.1: PoolManagerClass survives as EFT.ObjectsFactory, and LoadBundlesAndCreatePools now has
-            // TWO overloads - disambiguate to the one taking ICollection<ResourceKey>, which is the
-            // shape this prefix reads.
+            // TWO overloads, so the target must be pinned - and pinned with the FULL parameter list:
+            // a partial list matches nothing in AccessTools and Enable() throws, which aborts every
+            // registration after it (that is exactly how raid 2 died - the first pin named three of
+            // six parameters). The prefix reads `resources`, so this is the ICollection<ResourceKey>
+            // overload, not the Pools/List one.
             return AccessTools.Method(
                 typeof(EFT.ObjectsFactory),
                 nameof(EFT.ObjectsFactory.LoadBundlesAndCreatePools),
@@ -83,7 +86,10 @@ namespace Framesaver.Patches
                 {
                     typeof(EFT.ObjectsFactory.PoolsCategory),
                     typeof(EFT.ObjectsFactory.AssemblyType),
-                    typeof(ICollection<ResourceKey>),
+                    typeof(ICollection<EFT.ResourceKey>),
+                    typeof(Diz.Jobs.YieldDelegate),
+                    typeof(IProgress<EFT.InitLevelProgress>),
+                    typeof(System.Threading.CancellationToken),
                 });
         }
 
