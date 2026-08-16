@@ -617,7 +617,8 @@ namespace Framesaver.Patches
 
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(BotsController), "method_1");
+            // 4.1: was "method_1"; 4.1 names it CachedPatrolsZones (BotZone[] shape, same position).
+            return AccessTools.Method(typeof(BotsController), "CachedPatrolsZones");
         }
 
         [PatchPrefix]
@@ -783,7 +784,8 @@ namespace Framesaver.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(BotsController), "method_2");
+            // 4.1: was "method_2"; 4.1 names it AIPlacesInit (parameterless, same position after CachedPatrolsZones).
+            return AccessTools.Method(typeof(BotsController), "AIPlacesInit");
         }
 
         [PatchPrefix]
