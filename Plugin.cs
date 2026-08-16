@@ -7,11 +7,14 @@ namespace Ranger
     /// <summary>
     /// Ranger — the standalone telemetry kit extracted from Framesaver.
     ///
-    /// IN PROGRESS as of this commit: PlayerLoopProfiler.cs, GpuTelemetry.cs and
-    /// Patches/AiTickTimingPatches.cs have moved here with real git history preserved
-    /// (git-filter-repo + merge --allow-unrelated-histories, not a copy). Telemetry.cs,
-    /// ProtocolRunner.cs and the remaining measurement-only patches have not moved yet.
-    /// See docs/EXTRACTION-PLAN.md for the inventory and what's still blocked.
+    /// IN PROGRESS as of this commit: PlayerLoopProfiler.cs and GpuTelemetry.cs have moved
+    /// here with real git history preserved (git-filter-repo + merge
+    /// --allow-unrelated-histories, not a copy). AiTickTimingPatches.cs stayed in
+    /// Framesaver - Telemetry.cs still reads its stateful AiTiming.TotalMs, so moving it
+    /// would have created the same hard-dependency problem this file's TelemetryBus
+    /// exists to avoid. Telemetry.cs, ProtocolRunner.cs and the remaining measurement-only
+    /// patches have not moved yet. See docs/EXTRACTION-PLAN.md for the inventory and
+    /// what's still blocked.
     ///
     /// Config here is a FRESH start, not a migration of Framesaver's old "3. Telemetry"
     /// keys (Sophia's call, 2026-08-16 23:03Z: nothing shipped yet, only two of us run
@@ -29,12 +32,25 @@ namespace Ranger
         // pre-declare the rest of the ten from the design doc's inventory ahead of the
         // code that uses them - an unread config entry is a promise nothing keeps.
 
+        public static ConfigEntry<bool> TelemetryEnabled;
         public static ConfigEntry<string> ExpandPhase;
         public static ConfigEntry<bool> GpuTelemetryEnabled;
 
         private void Awake()
         {
             LogSource = Logger;
+
+            // Gates TelemetryBus.Enabled, which every publish-side call (Count/Event/Tag)
+            // checks before doing anything. Read once here and latched - see
+            // TelemetryBus.cs's own comment on why a static bool read is the whole cost.
+            TelemetryEnabled = Config.Bind(
+                "Telemetry", "Enabled", true,
+                "Record telemetry facts published to TelemetryBus by consumer mods (Framesaver's shipping " +
+                "features, and eventually Ranger's own sampler loop once it moves here). Off means " +
+                "Count/Event/Tag calls from anywhere are no-ops - the same posture as Ranger not being " +
+                "installed at all, so a consumer mod's own guard (`if (TelemetryBus.Enabled)`) never needs " +
+                "to distinguish the two cases.");
+            TelemetryBus.Enabled = TelemetryEnabled.Value;
 
             // Renamed from "Expand phase" in Framesaver when the meaning inverted from
             // allowlist to blocklist - preserved verbatim here, including the section
