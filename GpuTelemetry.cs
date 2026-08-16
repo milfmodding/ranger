@@ -253,13 +253,13 @@ namespace Framesaver
                 // Exist, not Instance: the Instance getter constructs a CameraClass when there is not one
                 // already, so reading it from the menu would have telemetry bringing a game singleton into
                 // existence early. Never observe through an accessor that can create.
-                if (!CameraClass.Exist)
+                if (!EFT.CameraControl.CameraManager.Exist)
                 {
                     // Not a failure - retry next interval.
                     return;
                 }
 
-                CameraClass camera = CameraClass.Instance;
+                EFT.CameraControl.CameraManager camera = EFT.CameraControl.CameraManager.Instance;
 
                 long start = Stopwatch.GetTimestamp();
                 ulong total, budget, used;
@@ -602,7 +602,7 @@ namespace Framesaver
             // for a config that is nowhere near GPU-bound.
             try
             {
-                Camera cam = CameraClass.Exist ? CameraClass.Instance.Camera : null;
+                Camera cam = EFT.CameraControl.CameraManager.Exist ? EFT.CameraControl.CameraManager.Instance.Camera : null;
                 if (cam != null)
                 {
                     sb.Append(",\"render\":\"").Append(cam.pixelWidth).Append('x').Append(cam.pixelHeight).Append('"');
@@ -620,7 +620,7 @@ namespace Framesaver
 
             try
             {
-                GraphicsSettingsClass g = GraphicsSettings();
+                EFT.Settings.Graphics.GraphicsSettingsGroup g = GraphicsSettings();
                 if (g != null)
                 {
                     sb.Append(",\"reflex\":\"").Append(g.NVidiaReflex.Value).Append('"');
@@ -679,7 +679,7 @@ namespace Framesaver
                 return;
             }
 
-            GraphicsSettingsClass probe = null;
+            EFT.Settings.Graphics.GraphicsSettingsGroup probe = null;
             try
             {
                 probe = GraphicsSettings();
@@ -699,7 +699,7 @@ namespace Framesaver
             sb.Append(",\"gfxSettings\":{");
             try
             {
-                GraphicsSettingsClass g = probe;
+                EFT.Settings.Graphics.GraphicsSettingsGroup g = probe;
                 {
                     sb.Append("\"textureQuality\":").Append(g.TextureQuality.Value);
                     sb.Append(",\"mipStreaming\":").Append(g.MipStreaming.Value ? "true" : "false");
@@ -731,14 +731,19 @@ namespace Framesaver
         // from ever initialising - disabling the feature we want to measure, in the file that measures it.
         // The `reflex` setting value plus whether frame reports ever appear answers the same question safely.
 
-        private static GraphicsSettingsClass GraphicsSettings()
+        private static EFT.Settings.Graphics.GraphicsSettingsGroup GraphicsSettings()
         {
-            if (!Singleton<SharedGameSettingsClass>.Instantiated)
+            // 4.1: SharedGameSettingsClass survives as EFT.Settings.SettingsManager; Graphics is a
+            // SettingsWithController<GraphicsSettingsGroup, ...> whose inherited `.Settings` field is
+            // the group this returns. Reached through Singleton - if SettingsManager does not register
+            // itself there, Instantiated stays false and this yields null, which the callers already treat
+            // as "no settings yet" rather than an error.
+            if (!Singleton<EFT.Settings.SettingsManager>.Instantiated)
             {
                 return null;
             }
 
-            SharedGameSettingsClass shared = Singleton<SharedGameSettingsClass>.Instance;
+            EFT.Settings.SettingsManager shared = Singleton<EFT.Settings.SettingsManager>.Instance;
             return shared != null && shared.Graphics != null ? shared.Graphics.Settings : null;
         }
 
