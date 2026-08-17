@@ -1537,6 +1537,13 @@ namespace Framesaver
               .Append(",\"standByRefused\":").Append(standByRefused)
               .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
 
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
+            // the NDJSON line above - awake/asleep/exempt/roleUnknown/standByRefused are read fresh
+            // by the .Append calls, this is a separate statement after them. See
+            // RangerBridge.PublishBotStandByCounts for why this call lives here rather than on
+            // BotStandByUpdatePatch itself.
+            Framesaver.Patches.RangerBridge.PublishBotStandByCounts(awake, asleep, exempt, roleUnknown, standByRefused);
+
             // `slicing` is the EFFECTIVE state, not the requested one, and it is the same expression the
             // patch branches on at AICoreControllerUpdatePatch.cs:64 rather than a re-derivation of it.
             // `cfg.brainPeriod` already reports what was asked for, and the failure this closes is the two
