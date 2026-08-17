@@ -429,65 +429,17 @@ namespace Framesaver.Patches
         }
 
         /// <summary>
-        /// One line per resolved grid-spawn bot, pairing the requested ring/distance/position with
-        /// the bot that got it. `id` is the same ProfileId `botSpawn` and death lines use, so this
-        /// joins to them - `pos` here IS the bot's spawn position (Common/CommonPlayer already log
-        /// it), repeated here so the ring/distance label sits on the same line as a position, rather
-        /// than making a reader join two lines just to know which distance a spawn position was
-        /// meant to be.
-        /// </summary>
-        internal static void GridSpawnResolved(BotOwner bot, int ring, float distance, int index, Vector3 requestedPos)
-        {
-            if (bot == null)
-            {
-                return;
-            }
-
-            StringBuilder sb = new StringBuilder(256);
-            sb.Append("{\"type\":\"gridSpawnResolved\"");
-            Common(sb, bot);
-            sb.Append(",\"ring\":").Append(ring);
-            sb.Append(",\"ringDistance\":").Append(F(distance));
-            sb.Append(",\"ringIndex\":").Append(index);
-            sb.Append(",\"requestedPos\":[").Append(F(requestedPos.x)).Append(',').Append(F(requestedPos.y))
-              .Append(',').Append(F(requestedPos.z)).Append(']');
-            sb.Append('}');
-            Emit(sb.ToString());
-        }
-
-        /// <summary>
-        /// A ring position that failed the pre-spawn NavMesh check and was skipped rather than
-        /// handed to AddPosition. No bot involved, so no `id`/`pos` from Common - this is a request
-        /// that never became a spawn, and the point of logging it is that it must NOT silently
-        /// shrink the ring without saying so in the same file the resolved lines live in.
-        /// </summary>
-        internal static void GridSpawnSkipped(int ring, float distance, int index, Vector3 candidatePos)
-        {
-            StringBuilder sb = new StringBuilder(192);
-            sb.Append("{\"type\":\"gridSpawnSkipped\"");
-            Clock(sb);
-            sb.Append(",\"ring\":").Append(ring);
-            sb.Append(",\"ringDistance\":").Append(F(distance));
-            sb.Append(",\"ringIndex\":").Append(index);
-            sb.Append(",\"candidatePos\":[").Append(F(candidatePos.x)).Append(',').Append(F(candidatePos.y))
-              .Append(',').Append(F(candidatePos.z)).Append(']');
-            sb.Append('}');
-            Emit(sb.ToString());
-        }
-
-        /// <summary>
         /// Fires for EVERY bot reaching Active, not only grid-spawned ones - a Postfix on the bot's
         /// own activation method (BotOwner.method_10, see BotActivationCanaryPatch below) has no way
         /// to know which bots came from a grid spawn, and singling them out would need the same
-        /// order-pairing DistanceGridSpawn already does once, not twice. Cheap regardless: one line,
-        /// same shape as every other BotLog line.
+        /// order-pairing the archived DistanceGridSpawn once did, not twice. Cheap regardless: one
+        /// line, same shape as every other BotLog line.
         ///
         /// **The whole point of this line is the join, not the line itself.** `pos` here is where
         /// the bot ACTUALLY is once fully active - compare against the `pos` on this same `id`'s
-        /// `botSpawn` line (position at creation, which for a grid spawn equals the requested
-        /// position exactly). A mismatch is the game's own PreActive NavMesh fallback having moved
-        /// the bot to a random zone spawn point after ~1s - confirmed 2026-08-08 that this happens
-        /// silently, with no error anywhere else in the log.
+        /// `botSpawn` line (position at creation). A mismatch is the game's own PreActive NavMesh
+        /// fallback having moved the bot to a random zone spawn point after ~1s - confirmed
+        /// 2026-08-08 that this happens silently, with no error anywhere else in the log.
         /// </summary>
         internal static void ActivationCanary(BotOwner bot)
         {
