@@ -1564,7 +1564,18 @@ namespace Framesaver
             // by the .Append calls, this is a separate statement after them. See
             // RangerBridge.PublishBotStandByCounts for why this call lives here rather than on
             // BotStandByUpdatePatch itself.
-            Framesaver.Patches.RangerBridge.PublishBotStandByCounts(awake, asleep, exempt, roleUnknown, standByRefused);
+            //
+            // The Present gate is LOAD-BEARING and must not be removed: unlike the other publish
+            // sites, this one calls the bridge method DIRECTLY (the bot-count locals above exist
+            // only in this scope), and an ungated call here threw FileNotFoundException on the
+            // first window flush of every Ranger-absent session (47,420 frames, incident
+            // 2026-08-16 20:19; register reg-dec-2026-08-17T043214). The gate must stop the CALL:
+            // a check inside the bridge method would still see the method invoked and therefore
+            // JIT-compiled, and Mono resolves Ranger.TelemetryBus from its body at compile time.
+            if (Framesaver.Patches.RangerBridge.Present)
+            {
+                Framesaver.Patches.RangerBridge.PublishBotStandByCounts(awake, asleep, exempt, roleUnknown, standByRefused);
+            }
 
             // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE, the ninth and last
             // of the shipping classes. Passes the SAME locals captured above for the NDJSON block -
