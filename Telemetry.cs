@@ -427,15 +427,10 @@ namespace Framesaver
 
             // Gated on state == Raid explicitly, not just "past the menu early-return" - Loading and
             // other non-Raid states reach here too and have no valid MainPlayer/BotsController yet.
-            // Marker written HERE, synchronously, before the spawn call - Trigger's own work is
-            // async (BotCreationDataClass.Create awaits internally), so this is the only line that
-            // reliably records the press itself rather than whenever the batch happens to resolve.
-            if (state == SessionState.Raid && Pressed(Plugin.GridSpawnKey.Value))
-            {
-                float[] distances = Framesaver.Patches.DistanceGridSpawn.ParseDistances();
-                WriteGridSpawnMarker(state, distances.Length, distances.Length * Plugin.GridSpawnCountPerDistance.Value);
-                Framesaver.Patches.DistanceGridSpawn.Trigger(distances);
-            }
+            //
+            // (The distance-grid spawn feature used to hook here - keybind press, synchronous marker,
+            // async Trigger. Archived 2026-08-17 by Sophia's ruling: not shipping in v1, deferred to
+            // Leica. Code preserved in git history; see commit "archive distance grid spawn".)
 
             // LocationId lands some time after GameWorld does, so keep trying until it takes.
             if (_map.Length == 0)
@@ -2047,31 +2042,6 @@ namespace Framesaver
             Plugin.LogSource.LogInfo("Framesaver mark: " + taken + " frames, " + Fmt(span) + " ms");
         }
 
-        /// <summary>
-        /// The instant the grid-spawn key is pressed, before any bot exists - Sophia asked for a
-        /// specific telemetry marker at the press itself, not only the per-bot lines that follow
-        /// once spawning resolves (those come from DistanceGridSpawn/BotLog separately, and can
-        /// take real time - the async BotCreationDataClass.Create chain, not this frame). This is
-        /// the "she pressed the key at this qpc/raidElapsed/position" fact, which nothing else
-        /// records if this line is skipped or the batch never resolves.
-        /// </summary>
-        private void WriteGridSpawnMarker(SessionState state, int ringCount, int totalBots)
-        {
-            StringBuilder sb = new StringBuilder(512);
-            sb.Append("{\"type\":\"gridSpawnPressed\"");
-            sb.Append(",\"window\":").Append(_window);
-            sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
-            Num(sb, "t", Time.realtimeSinceStartup - _sampleStart);
-            sb.Append(",\"state\":\"").Append(state.ToString().ToLowerInvariant()).Append('"');
-            AppendRaidIdentity(sb);
-            AppendRaidClock(sb);
-            AppendPosition(sb);
-            sb.Append(",\"rings\":").Append(ringCount);
-            sb.Append(",\"requestedBots\":").Append(totalBots);
-            sb.Append('}');
-            Append(sb.ToString());
-            Plugin.LogSource.LogInfo("Framesaver grid spawn requested: " + totalBots + " bots across " + ringCount + " ring(s)");
-        }
 
         private void WriteHeader()
         {
