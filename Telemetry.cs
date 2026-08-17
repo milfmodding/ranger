@@ -1555,6 +1555,11 @@ namespace Framesaver
               .Append(",\"tickedSum\":").Append(_tickedSum)
               .Append(",\"liveSum\":").Append(_liveSum);
 
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
+            // the NDJSON above - AICoreControllerUpdatePatch's fields are read fresh by the .Append
+            // calls above, this is a separate statement after them.
+            AICoreControllerUpdatePatch.PublishTelemetry();
+
             // Which AI/co-op mods are present. Here rather than the header because the
             // header runs in Awake, where reading ModCompat latches detection against a
             // plugin list BepInEx has not finished filling. This block already calls
