@@ -175,6 +175,42 @@ git-filter-repo history-preserving technique. The 3 shipping-class touch points 
 it's "move the whole file, then cut exactly 3 threads that cross the boundary and reconnect
 them through the bus."
 
+## Correction to the read-direction reframe above (2026-08-17, fuller audit)
+
+The reframe above checked only `PlayerLoopProfiler`/`GpuTelemetry` call sites and concluded
+"only 3 shipping-class touch points." **That conclusion was built on an incomplete audit and was
+wrong.** A full pass over every class `Telemetry.cs` references (27 total, not 2) finds it reads
+directly from AT LEAST 9 genuinely shipping-feature classes, not 3:
+
+- `SleepingBotAnimatorPatch`, `RoleSleepDistance`, `BossGroupWake` — the original 3, still correct.
+- `AICoreControllerUpdatePatch` — the AI brain scheduler (reads `LastBrainsTicked`,
+  `LiveAgents`, `PendingRemoval`, `RemovedTotal` for the `agents` NDJSON block).
+- `BotStandByUpdatePatch` — the core stand-by system itself (reads `RoleStandByKnown`,
+  `RoleAllowsStandBy` per-bot).
+- `LongRangeExemption` — reads `.Count` for `snipersAwake`.
+- `ModCompat` — the compatibility-guard system (reads `SuppressSlicing`, calls
+  `AppendDetected`).
+- `BotBackup` (`BotBackupPatches.cs`) — reads `Fired`/`Bailed`, calls `ResetWindow`.
+- `AsyncDrain` (`AsyncDrainPatch.cs`) — the drain-budget lever, already known from the
+  `AiTiming.ToMs` finding, but it ALSO surfaces `WorstCallbackMs`/`WorstCallbackName` etc. into
+  Telemetry's own output, not just the one utility call.
+
+Correcting the record rather than quietly fixing the plan: this is NOT "move the whole sampler
+(minus 3 threads) and wire 3 bus calls." It is closer to the shape DESIGN.md section 1 already
+described in general terms — SEVERAL shipping features each need a small publish-side change
+(`TelemetryBus.Count/Event/Tag` calls added to their own code) before the sampler core that
+reads them can move. This is real, multi-file surgery across the shipping half of the mod, not
+a narrow 3-class exception.
+
+**Practical consequence for sequencing**: the "move the sampler core in one commit" plan from
+the previous section is too optimistic. The actual order has to be: (1) add publish calls to
+EACH of the ~9 shipping classes first (this touches shipping code, needs care, one class at a
+time is safer than all nine in one commit), verifying Framesaver still builds and its NDJSON
+output is byte-identical after each; (2) only once every shipping-side read Telemetry.cs
+currently does directly has a bus equivalent, THEN move the sampler core and repoint its reads
+from direct class access to `TelemetryBus.TryGet*`; (3) delete the moved files from Framesaver.
+That is three real phases, not one.
+
 ## Risks carried in from the design draft (still apply)
 
 - The untracked-six problem class: use `git mv`, not delete+recreate, so history follows.
