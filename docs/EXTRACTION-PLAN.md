@@ -441,3 +441,116 @@ the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A
 quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
 (both contain the gate fix); match the ndjson header's commit stamp to whichever is
 deployed.
+
+## Seam-5 flip, defect, and fix (2026-08-17 07:04Z–07:26Z) — see register
+
+Full story lives in the room and the register (`reg-dec-2026-08-17T071420`,
+`reg-dec-2026-08-17T072603`, `reg-dec-2026-08-17T074415`), not duplicated here. Short
+version for anyone reading this doc cold: Ranger took ownership of the telemetry
+lifecycle (config + patch enables); a defect was found and fixed where the
+PlayerLoopProfiler's install/arm had to be PARTIALLY REVERTED to Framesaver, because
+it and the sampler that reads its `Snapshot` are statically coupled within one
+assembly and cannot change owners independently. **That defect is this section's whole
+lesson, generalised below**, because it turned out to describe most of what remains.
+
+## Why seam-3 (AwakeAge) and BotBackup are BOTH capstone-coupled, not independently
+wireable (2026-08-17 ~07:46Z)
+
+After the flip verified clean, the plan called for two more "pre-capstone seams":
+AwakeAge (per-bot wake/sleep events) and BotBackup (already publish-wired via the bus,
+seemed like a pure move). Checked both against `Telemetry.cs`'s actual read pattern
+before touching code, and both hit the SAME wall the profiler did:
+
+- **AwakeAge**: `Telemetry.Flush()` doesn't just publish AwakeAge facts — it reads
+  `AwakeAge`'s bucketed histogram (`Ticks[]`/`Calls[]`, 6 buckets) via `Append(sb)` for
+  its own NDJSON block, and drains per-bot span rows via `DrainRows(Append, _window)`
+  every window. Neither is a simple two-value event; a histogram and a per-bot row set
+  don't fit `TelemetryBus.Count/Event/Sum/Tag` without either serialising an array
+  through `Tag` (defeats the bus's typed-value purpose) or widening the bus's
+  vocabulary for one caller. `Ranger.AwakeAge` is also `internal static` — cross-assembly
+  access needs it `public` first, same problem the bus was built to route around.
+- **BotBackup**: already has a clean bus publish (`RangerBridge.PublishBotBackup`, 5
+  plain ints, seam-2-shaped) — but `Telemetry.Flush()` ALSO reads `BotBackup.Fired`/
+  `.Bailed` directly for its own `"botBackup"` NDJSON block, and calls
+  `BotBackup.ResetWindow()` in its own window-reset sequence. The bus publish and the
+  direct read are two different relationships to the same class; only the publish half
+  is bridgeable, and the direct-read half is exactly the profiler's coupling.
+
+**The general rule, stated once so it doesn't need re-discovering per class:** a
+measurement class is independently seam-wireable ONLY if `Telemetry.cs` never reads its
+state or calls its lifecycle methods (`ResetWindow`, `Append`, `DrainRows`, etc.)
+directly — i.e. only if the class's sole relationship to the sampler is "publishes a
+fact, Telemetry never reads it back." `StandByTransitions` (seam-2) qualified. AwakeAge,
+BotBackup, BotLog (four direct `Telemetry.cs` reads per the earlier audit), and the
+profiler do not — Telemetry reads or calls into all of them directly, which means they
+are part of the sampler's own internal object graph, not external publishers to it.
+**Every one of those moves AT the capstone, together with `Telemetry.cs`, or not at
+all before it.**
+
+Consequence: the "5 seams, wire pre-capstone" framing from earlier in this doc was
+optimistic. Two of five (StandByTransitions, and the profiler before its ownership bug)
+were genuinely independent. The rest were always capstone-coupled; the plan just hadn't
+checked each one against `Telemetry.cs`'s actual reads yet. **Nothing more is landable
+before the capstone** except pure administrative work (test migration, below) and the
+remaining fully-clean file moves already done.
+
+## ProtocolRunner test-migration plan (2026-08-17 ~07:50Z, design only — no code changed)
+
+`ProtocolRunner.cs` has not moved yet (still 100% Framesaver-side; DESIGN.md's inventory
+lists it as a mover but nothing has touched it). Its test coupling, found by direct
+read of `tests/unwrap/Program.cs`:
+
+**Two reflection blocks, both assembly-qualified by string name:**
+1. `StripComment`/`TryParse` (lines ~76–99): pure parsing helpers, no BepInEx/Unity
+   dependency, no state. `asm.GetType("Framesaver.ProtocolRunner")` then
+   `GetMethod(..., BindingFlags.NonPublic | BindingFlags.Static)`.
+2. `Directive`/`_defaultSeconds`/`Step` (lines ~535–568): the `@directive` parser —
+   also pure (comment explicitly notes `Load()` needs BepInEx config and `Due` needs a
+   Unity clock, so neither is tested here; only the parseable half is). Reflects into
+   the nested `Step` type and a private static field alongside the method.
+
+**The same file also carries the AwakeAge bucket test** (lines ~578–600,
+`asm.GetType("Framesaver.Patches.AwakeAge")`, `Bucket`/`Ticks`/`Calls`/`Append`/
+`ResetWindow`) — relevant here only because it's proof the migration shape below has to
+handle more than one assembly per test run already, not a new problem ProtocolRunner
+introduces.
+
+**The migration shape (recommended): one test program, `Assembly.LoadFrom` both DLLs.**
+Not two test programs — the file already interleaves checks across logical units
+(protocol parsing, AwakeAge buckets, StandByTransitions emission, in one linear `Check()`
+sequence with a running pass/fail tally) and splitting it would either duplicate the
+tally/`Check` harness or lose the single "N of M passed" summary the file's own bottom
+line reports. Concretely:
+- `var asm = Assembly.LoadFrom("Framesaver.dll")` stays for the classes that stay
+  (StandByTransitions et al., once wherever they land).
+- Add `var rangerAsm = Assembly.LoadFrom("Ranger.dll")` once, near the top, alongside
+  the existing `asm` load.
+- Each moved class's `asm.GetType("Framesaver.X")` becomes
+  `rangerAsm.GetType("Ranger.X")` — mechanical, one line per reflection call site, since
+  the namespace switch (`Framesaver.Patches` → `Ranger`) is already the pattern every
+  file move in this doc has used.
+- `BindingFlags` and method/field names are UNCHANGED — the moved classes' internals
+  (checked against every file moved so far) don't rename members, only their namespace.
+
+**CORRECTION, same turn: ProtocolRunner is ALSO capstone-coupled.** Said above "nothing
+found reading ProtocolRunner's STATE directly" as a hopeful placeholder pending the
+audit — then ran the audit before publishing this as settled, and it was wrong. Grep of
+`Telemetry.cs` for `ProtocolRunner\.` (11 hits) shows the same split as everywhere else:
+`ResetForRaid()`, `Due`, `AutoStartDue`, `CanAdvance`, `Advance()` are lifecycle control
+(fine, would bridge) — but lines 1699–1709 are `Flush()` reading `ProtocolRunner.Name`/
+`.StepIndex`/`.StepCount`/`.StepSeconds`/`.Arm` DIRECTLY to build its own `"protocol"`
+NDJSON block, the identical shape to `BotBackup.Fired`/`.Bailed` and AwakeAge's
+histogram. **ProtocolRunner moves at the capstone too.** Three of the general rule's
+exceptions accounted for now (AwakeAge, BotBackup, ProtocolRunner), zero found that
+weren't — worth treating that as the base rate going forward rather than re-hoping per
+file: assume capstone-coupled until an actual grep says otherwise, not the reverse.
+
+**What survives from this unit despite the correction:** the TEST migration shape
+(one program, `Assembly.LoadFrom` both DLLs, mechanical `asm.GetType` →
+`rangerAsm.GetType` per moved reflection call) is still correct and still useful — it
+just applies to the WHOLE capstone's test surface (ProtocolRunner's two blocks +
+AwakeAge's bucket block, all moving together) rather than to a ProtocolRunner-only
+pre-capstone move. No separate design work needed later; this section already covers it.
+
+**Status: fully capstone-coupled, nothing pre-landable here either.** Confirmed 2026-08-17
+~07:52Z by direct grep, not left as an assumption.
