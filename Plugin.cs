@@ -48,7 +48,6 @@ namespace Ranger
         public static ConfigEntry<float> SpikeEventMs;
         public static ConfigEntry<bool> ProfilePlayerLoop;
         public static ConfigEntry<string> ExpandPhase;
-        public static ConfigEntry<bool> GpuTelemetryEnabled;
 
         // AsyncDrain diagnostics (worstCallbacks): read by AsyncDrainPatch's diagnostics half,
         // which is still in Framesaver until the class-split's cutover half. Declared here NOW
@@ -116,12 +115,6 @@ namespace Ranger
                 "Comma-separated player-loop phases NOT to break into their child systems. Blank - " +
                 "the default - expands every phase. This is a blocklist. Read only inside Install(), " +
                 "so a change takes effect on the NEXT raid load.");
-
-            GpuTelemetryEnabled = Config.Bind(
-                "Telemetry", "GPU telemetry", true,
-                "Sample VRAM budget vs usage, Unity's FrameTimingManager and the render-submission " +
-                "profiler counters. The only view into the GPU side, where the TimeUpdate " +
-                "presentation-wait spikes live.");
 
             AsyncDrainDiagnostics = Config.Bind(
                 "Experimental", "Async drain diagnostics", true,
