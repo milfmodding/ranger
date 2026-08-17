@@ -50,6 +50,24 @@ namespace Framesaver.Patches
             PendingMax = 0;
             LargestRequest = 0;
         }
+
+        /// <summary>
+        /// Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Publishes all five
+        /// fields, not just the two (Fired/Bailed) the NDJSON "botBackup" block currently emits -
+        /// Added/PendingMax/LargestRequest are real per-window facts this class already tracks and
+        /// there is no reason the bus should see less than the class knows. Routed through
+        /// RangerBridge rather than calling Ranger.TelemetryBus directly - see RangerBridge.cs.
+        /// Called once per window from Telemetry.cs's Flush(), beside the existing "botBackup" block.
+        /// </summary>
+        internal static void PublishTelemetry()
+        {
+            if (!RangerBridge.Present)
+            {
+                return;
+            }
+
+            RangerBridge.PublishBotBackup(Added, Fired, Bailed, PendingMax, LargestRequest);
+        }
     }
 
     internal class BotBackupAddPatch : ModulePatch

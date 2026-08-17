@@ -1425,6 +1425,12 @@ namespace Framesaver
             sb.Append(",\"botBackup\":{\"fired\":").Append(BotBackup.Fired)
               .Append(",\"bailed\":").Append(BotBackup.Bailed)
               .Append('}');
+
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
+            // the NDJSON block above - Fired/Bailed are read fresh by the .Append calls, this is a
+            // separate statement after them. Publishes all five fields BotBackup tracks (also
+            // Added/PendingMax/LargestRequest), not just the two the NDJSON block emits.
+            BotBackup.PublishTelemetry();
             sb.Append(",\"bundleLoad\":{\"calls\":").Append(BundleLoad.Calls)
               .Append(",\"keys\":").Append(BundleLoad.Keys)
               .Append(",\"keysMax\":").Append(BundleLoad.KeysMax)
