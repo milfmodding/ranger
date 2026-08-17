@@ -424,6 +424,18 @@ BotBackup (seam-bearing reclass), BotLog (moves WITH Telemetry.cs),
 AsyncWorkerTiming (split ruling), ProtocolRunner (test plan), AsyncDrain +
 SleepingBot mixed-file halves (splits), and Telemetry.cs itself.
 
+### AsyncWorkerTiming split EXECUTED (2026-08-17 ~05:30Z, Ranger `0bf3278`)
+
+Sophia ruled at 05:13Z ("timing half moving to Ranger is a good idea"): re-landed
+from preserved history `e616a3a` and split. Ranger keeps the timing statics + both
+timing patches; the suppression half (`Plugin.DrainInUpdateOnly` read, skip return,
+`FixedSkips` increment) is the shipping lever and stays in Framesaver.
+`FixedSkips` keeps its home in Ranger's `AsyncWorkerTiming` — at cutover the
+increment arrives as a seam event from Framesaver's suppressor, so the counter and
+its NDJSON field keep one home without config crossing the boundary. Framesaver's
+original file is untouched until cutover (drops to suppression-only then). Builds
+clean. **Net: 11 of ~17 measurement files Ranger-side.**
+
 **Deploy note for this session:** Framesaver HEAD is now `582afb1` (TickMath, on top of
 the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A…` md5
 quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
