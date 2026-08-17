@@ -66,9 +66,11 @@ namespace Ranger
                 "same posture as Ranger not being installed.");
 
             RunTag = Config.Bind(
-                "Telemetry", "Run tag", "41-gatefix-verify",
+                "Telemetry", "Run tag", "",
                 "Stamped into the telemetry file name and every header, so a written note only needs " +
-                "the tag to find its data. Default carries the cutover verification tag.");
+                "the tag to find its data. Per-run label - set it per run, leave empty for none. " +
+                "(The default was briefly the cutover-verification tag; Tau's nit - a label must " +
+                "not have an opinion about what run it is.)");
 
             ProtocolKey = Config.Bind(
                 "Telemetry", "Protocol step key",
