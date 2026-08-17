@@ -554,3 +554,254 @@ pre-capstone move. No separate design work needed later; this section already co
 
 **Status: fully capstone-coupled, nothing pre-landable here either.** Confirmed 2026-08-17
 ~07:52Z by direct grep, not left as an assumption.
+
+## ProtocolRunner's cross-assembly reflection into Plugin (2026-08-17 ~08:04Z, found during
+capstone commit-sequence planning)
+
+`ProtocolRunner.BuildEntryMap()` reflects `typeof(Plugin)` UNQUALIFIED, and `ProtocolRunner`
+lives in `namespace Framesaver` — so this resolves to `Framesaver.Plugin`, not some Ranger-side
+equivalent. This is not read-only: `Advance()` writes `a.Key.BoxedValue = a.Value` into whatever
+`ConfigEntryBase` the protocol `.ini` names. Checked all 9 deployed `protocol-*.ini` files: real
+protocols assign genuine SHIPPING settings, not just telemetry knobs — `Brain update period`
+(the AI-slicing lever), `Cull sleeping bot animators`, `Force for all roles`,
+`Drain completions in Update only`, `Max delta time`. Three shipping features, toggled by an
+A/B protocol file, by design — that IS the point of the class (see its own doc comment on why
+a keypress-driven arm exists at all).
+
+**Consequence for the capstone:** ProtocolRunner cannot become "Ranger reflects into Ranger's
+own Plugin" when it moves — its whole purpose requires it to keep reflecting into
+`Framesaver.Plugin`, cross-assembly, after the move. This is NOT a blocker (public static
+fields, which `Plugin`'s config entries already are for BepInEx binding, are reachable by
+reflection across assemblies same as within one), but it IS a different, looser-coupled
+relationship than every other capstone-coupled class: those move BECAUSE Telemetry.cs reads
+their state directly (a same-assembly problem the bus or the move itself fixes); this one has
+an *additional*, orthogonal cross-assembly reflection dependency that survives the move
+unchanged and needs its own explicit statement rather than being silently assumed away.
+
+**What the capstone commit must do for this specifically:**
+- `BuildEntryMap()`'s `typeof(Plugin)` must become an explicit, guarded resolution of
+  `Framesaver.Plugin` by assembly-qualified name (e.g.
+  `Type.GetType("Framesaver.Plugin, Framesaver")` or an equivalent Chainloader-based lookup),
+  not a bare `typeof(Plugin)` that would silently bind to `Ranger.Plugin` instead once
+  `ProtocolRunner` lives in `namespace Ranger`. **This is a real behavior change hiding inside
+  what looks like a namespace-only move** — every other file moved so far kept `typeof(X)`
+  references pointed at classes that moved WITH them; this is the first one pointing at a class
+  that does NOT move.
+- Needs a null/missing-type guard for the case Framesaver is somehow absent while Ranger runs
+  standalone — same soft-dependency posture as everything else, but worth its own explicit
+  check since a silently-empty entry map would make every protocol file "parse successfully,
+  fail every key" rather than fail loudly the way an unknown key already does today.
+- The capstone verification raid needs one concrete check added to its list: load a real
+  protocol file (e.g. `protocol-brain-slice.ini`) post-move and confirm `Brain update period`
+  still actually changes when the protocol key is pressed — a functional check, not just an
+  ndjson-shape comparison, because this is the one piece of the capstone that changes *what a
+  string resolves to* rather than only *which assembly a class lives in*.
+
+## The capstone commit sequence (2026-08-17 ~08:10Z, planned before any code touched)
+
+Full re-audit of every file and call site done (direct read of `Telemetry.cs`,
+`AwakeAgeTiming.cs`, `BotBackupPatches.cs`, `ProtocolRunner.cs`, `BotLogPatches.cs`,
+`RangerBridge.cs`, `TelemetryBus.cs`, `Ranger/Plugin.cs`, `Framesaver/Plugin.cs`,
+`tests/unwrap/Program.cs`, plus every deployed `protocol-*.ini`). What follows is the
+concrete plan, not a restatement of findings already above.
+
+### What moves, in one commit pair (Ranger + Framesaver, paired, deployed together)
+
+**Into Ranger** (namespace switch `Framesaver` → `Ranger`, mechanical per every prior
+move in this doc):
+- `Telemetry.cs` (the sampler/window/flush/spike core — all of it, not a split)
+- `AwakeAgeTiming.cs` — NOTE: already a Ranger-side INERT COPY since batch 2
+  (`6b7558d`). Capstone re-lands its `Woke`/`Ended`/`RecordAt` as the LIVE copy and the
+  Framesaver original is deleted, not moved again — the merge-with-history step already
+  happened; this is a namespace-switch + delete, same shape as every other file's
+  second half.
+- `BotBackupPatches.cs` (the `BotBackup` static class AND its two Harmony patches,
+  `BotBackupAddPatch`/`BotBackupFlushPatch` — the whole file, patches included, since
+  nothing in DESIGN.md's inventory or this audit found a shipping-feature reason to
+  split the patches from the statics they instrument)
+- `ProtocolRunner.cs` — whole file, WITH the `BuildEntryMap` fix above (assembly-
+  qualified cross-reference to `Framesaver.Plugin`, guarded for absence)
+- `BotLogPatches.cs` (the `BotLog` static class AND `BotSpawnLogPatch`/
+  `BotActivationCanaryPatch` — whole file, same reasoning as BotBackup)
+- `PlayerLoopProfiler.cs` — already a Ranger-side inert copy (skeleton-era). Capstone
+  makes it live: Ranger's `Plugin.cs` regains the `Install()`/`ArmFrameGap()` call the
+  seam-5 follow-up deliberately reverted OUT of Ranger, and Framesaver's copy is
+  deleted (not just its call site — the file itself, since nothing else in Framesaver
+  references `PlayerLoopProfiler` once `Telemetry.cs` moves with it).
+
+**Stays in Framesaver, unchanged:**
+- `SleepingBotAnimatorPatch`, `RoleSleepDistance`, `BossGroupWake`,
+  `AICoreControllerUpdatePatch`, `BotStandByUpdatePatch`, `LongRangeExemption`,
+  `ModCompat`, `AsyncDrainPatch` (suppression half), `GcControl.cs` — all shipping
+  features, all already publish through `RangerBridge`/`TelemetryBus` for the facts
+  Telemetry.cs reads back.
+- `TriggerSubscribers` (in `AwakeAgeTiming.cs` today, alongside `AwakeAge` — see "one
+  file, two classes" note below).
+- `GpuTelemetry.cs` — already fully split (Ranger owns the archived-instruments
+  shell + Qpc/gfx; Framesaver has no copy at all post-split, confirmed this session).
+
+### One thing the audit above did not have a section for: `TriggerSubscribers`
+
+`AwakeAgeTiming.cs` contains TWO classes: `AwakeAge` (capstone-coupled, moves) and
+`TriggerSubscribers` (a different instrument — max ShootData subscriber count —
+referenced from `Telemetry.cs` line 1379 the same direct-read way). Grep says
+`TriggerSubscribers` has NO Framesaver-shipping-class references itself and IS read
+directly by `Telemetry.cs`, so it is capstone-coupled by the same rule as everything
+else in this file — it moves WITH `AwakeAge`, same file, same commit. Confirmed: no
+separate finding needed, the file moves as one unit exactly as DESIGN.md's original
+inventory said ("AwakeAgeTiming" as one line item, never split).
+
+### The three genuine bridge rewires this commit must also do
+
+These are shipping-code edits (Framesaver), not just deletions, because
+`BotStandByUpdatePatch.Wake()`/`GoToSleep()` today call `StandByTransitions.Woken()`/
+`.Slept()` DIRECTLY (ticks-based, for the immediate wake/sleep cost) in ADDITION to the
+additive `RangerBridge.PublishStandByTransition` call already landed at seam-2. Once
+`StandByTransitions` (already Ranger-side since batch 1, currently an inert duplicate)
+becomes the ONLY copy, the direct call in `BotStandByUpdatePatch.cs` has nothing to call
+— `Framesaver.Patches.StandByTransitions` stops existing. **This is the one place the
+capstone touches live shipping code, not just the sampler files.** Fix: delete the two
+direct calls (`StandByTransitions.Woken(wakeTicks)` / `.Slept(sleepTicks)`) from
+`BotStandByUpdatePatch.cs`, keep the existing `RangerBridge.PublishStandByTransition`
+calls exactly as they are (already gated, already correct) — the bus publish becomes
+the ONLY path, which is exactly the shape seam-2 built and verified weeks before the
+capstone needed it. Zero new code here, only a deletion.
+
+Same shape does NOT apply to `AwakeAge.Woke`/`.Ended` (called from
+`SleepingBotAnimatorPatch` per the original Phase-2 audit's seam 1) or `BotLog.
+StandByAssigned` (called from `BotStandByInitPointsPatch`, seam 3) — THOSE calls were
+never bridged additively the way seam-2 was (the seam-3 ordering correction above
+explains why: bot-identity payloads can't go through the generic bus, so they need a
+typed `RangerBridge` method same-commit). **This commit must ADD**:
+- `RangerBridge.NotifyAwakeAgeWoke(BotOwner)` / `NotifyAwakeAgeEnded(BotOwner)` —
+  NoInlining-wrapped per the class's own established pattern, calling
+  `global::Ranger.AwakeAge.Woke(bot)`/`.Ended(bot)` directly (BotOwner is a Framesaver-
+  visible EFT type, not a Ranger type, so passing it across the bridge is fine —
+  RangerBridge already takes typed non-Ranger arguments in half its methods).
+- `SleepingBotAnimatorPatch`'s two call sites (~lines 551/555 per the Phase-2 audit)
+  switch from whatever they call today (need to re-check at commit time — the Phase-2
+  audit describes this as `AwakeAge.Ended/Woke(owner)` still being CALLED DIRECTLY, not
+  yet bridged, unlike StandByTransitions) to `RangerBridge.NotifyAwakeAgeWoke/Ended`.
+- `BotLogPatches.cs`'s own `Death()` method calls `AwakeAge.Ended(died)` directly (found
+  in this session's grep, line ~in the Death handler) — but `BotLog` and `AwakeAge` are
+  moving in the SAME commit, so this call needs no bridge at all: it becomes an ordinary
+  same-assembly call once both are Ranger-side. No bridge method needed for this one
+  specific call site — flagging so nobody builds one that turns out to be dead code.
+- `BotStandByInitPointsPatch`'s `StandByAssigned` call: per the Phase-2 audit this is
+  "the one genuine move→stay read left" — `BotLog.StandByAssigned` reads
+  `BotStandByUpdatePatch.RoleStandByKnown/RoleAllowsStandBy` (shipping predicates) to
+  enrich its own event line. Since `BotLog` moves to Ranger this commit, that read
+  becomes cross-assembly. Fix per the audit's own resolution: fold both booleans into
+  the call's payload — `RangerBridge.NotifyBotLogStandByAssigned(bool effective, bool?
+  roleAllows, bool forced, string profileId, ...)` (exact signature TBD at write time,
+  matching whatever `StandByAssigned` needs to build its NDJSON line), computed in
+  `BotStandByInitPointsPatch.cs` (which already has both predicates in scope) and
+  passed in, rather than `BotLog.StandByAssigned` reaching back into
+  `BotStandByUpdatePatch` cross-assembly.
+
+### Config and lifecycle (Plugin.cs both sides)
+
+- Ranger's `Plugin.cs` gains: `PlayerLoopProfiler.Install()` + `.ArmFrameGap()` calls
+  (moving back from the seam-5 partial-revert), `gameObject.AddComponent<Telemetry>()`
+  (the sampler component itself — Ranger's `GameObject` needs identifying; check
+  whether `BaseUnityPlugin` gives one for free the way Framesaver's does), and the
+  `AsyncDrainDiagnostics` config entry is ALREADY declared Ranger-side (seam-5) but
+  unwired — this commit is where it finally gets read by something (the diagnostics
+  half of `AsyncDrainPatch`, whenever that class-split lands — NOTE this is likely
+  still open after the capstone; check the strip-list's AsyncDrainPatch ruling before
+  assuming it's in scope for THIS commit specifically).
+- Framesaver's `Plugin.cs` DROPS: the `PlayerLoopProfiler.Install/.ArmFrameGap` block
+  (the comment already marks it as capstone-bound), the
+  `gameObject.AddComponent<Telemetry>()` line, and `BotLog.Subscribe()` (moves with
+  BotLog — check whether Ranger's `Plugin.Awake()` needs to call `Ranger.BotLog.
+  Subscribe()` in its place, since the death-event subscription has to happen
+  somewhere and BotLog is the class that owns `_subscribed`).
+- Framesaver's `Plugin.cs` LOSES four more `Enable()` lines: `new BotBackupAddPatch().
+  Enable()`, `new BotBackupFlushPatch().Enable()`, `new BotSpawnLogPatch().Enable()`,
+  `new BotActivationCanaryPatch().Enable()`. Since the PATCH CLASSES move to Ranger
+  along with the static classes they instrument (`BotBackup`, `BotLog`), their
+  `Enable()` calls move too — Ranger's `Plugin.Awake()` gains these four lines.
+
+### `tests/unwrap/Program.cs` — same commit, per the migration shape already designed
+
+Add `var rangerAsm = Assembly.LoadFrom(rangerDll)` near the top (needs a second CLI arg
+or a `FindUp`-style default, mirroring the existing `dll` argument handling at the top
+of `Main`). Mechanical per-line changes, all confirmed by this session's grep of the
+test file:
+- Line 76/536: `asm.GetType("Framesaver.ProtocolRunner")` →
+  `rangerAsm.GetType("Ranger.ProtocolRunner")` (both reflection blocks touch the same
+  type, fix once, applies to both).
+- Line 580: `asm.GetType("Framesaver.Patches.AwakeAge")` →
+  `rangerAsm.GetType("Ranger.AwakeAge")`.
+- Line 330: `asm.GetType("Framesaver.Patches.BotLog")` → `rangerAsm.GetType("Ranger.
+  BotLog")`.
+- Line 460: `asm.GetType("Framesaver.Patches.StandByTransitions")` → already
+  Ranger-side since batch 1 but the TEST reference was never updated (batch 1's
+  own log says StandByTransitionTiming was "fully clean" at the test level with
+  ZERO test references — re-check this at commit time, this line 460 hit may be
+  stale/wrong in my grep, or batch 1's clean-test claim may have missed it. VERIFY
+  BEFORE ASSUMING, per this session's whole lesson.)
+- Line 737: `asm.GetType("Framesaver.Patches.TriggerSubscribers")` →
+  `rangerAsm.GetType("Ranger.TriggerSubscribers")`.
+- `BindingFlags`, method names, field names: unchanged, per every prior move.
+- Lines 384/432 (`RoleSleepDistance`, `BossGroupWake`) and 775 (`SleepingBotAnimatorPatch`)
+  and 885/919/921 (`Framesaver.Plugin` field checks) stay on `asm` (Framesaver) —
+  those classes do not move.
+
+### Sequencing within "one commit pair"
+
+Given the size, "one commit pair" likely means one Ranger commit + one Framesaver
+commit landed atomically (same GO, same deploy, same raid) rather than one git commit
+each containing everything — splitting Ranger's commit into "the 5 file moves" and
+"the Plugin.cs wiring" as two sequential Ranger commits (both required before
+Framesaver's half can build) is fine and probably clearer to review, AS LONG AS
+neither side is deployed/tested until both are complete, matching the "don't launch
+between them" discipline already used for seam-5. `tests/unwrap/Program.cs` change
+rides with whichever commit is easiest to verify it against (probably last, once both
+DLLs exist to build against).
+
+### Verification raid criteria (extends the seam-5/split pattern already proven)
+
+1. NDJSON shape byte-identical to the last verified raid (`41-split-verify`) for every
+   field NOT touched by this move — field names, not just presence, since this is the
+   commit most likely to introduce a silent rename.
+2. Zero new exceptions in Player.log (same bar every prior raid in this arc used).
+3. Install/ownership log lines: Ranger's boot log should now show the profiler +
+   sampler install (`Framesaver: telemetry...` lines should be gone entirely, since
+   Framesaver no longer runs a sampler at all — different bar than seam-5's "install
+   lines Framesaver-only", this is now the opposite: Ranger-only, because the whole
+   sampler moved, not just the lifecycle).
+4. **New, specific to this commit**: a protocol file's arm actually changes shipping
+   behavior post-move (the `BuildEntryMap` cross-assembly check above) — load
+   `protocol-brain-slice.ini`, press the protocol key, confirm the NDJSON `protocol`
+   block's `arm` field changes AND `Brain update period`'s effect is visible (slicing
+   on/off, same as any protocol-file A/B already run this project).
+5. StandByTransitions numbers (`woken`/`wokenMs`/`slept`/`sleptMs`) still populate —
+   confirms the seam-2 bus publish, now the ONLY path, still works after the direct-call
+   deletion in `BotStandByUpdatePatch.cs`.
+6. AwakeAge buckets and per-bot `botWindow` rows still populate — confirms the new
+   `RangerBridge.NotifyAwakeAgeWoke/Ended` bridge methods work.
+7. `botStandBy` event lines still carry `roleAllows`/`forced` correctly — confirms the
+   payload-widening fix for `BotLog.StandByAssigned`.
+
+### What is NOT in this commit (deliberately deferred)
+
+- Phase 3 (deleting Framesaver's now-empty originals) happens AS PART of this commit
+  for the 5 moved files (git mv semantics, not a separate later deletion) — unlike the
+  clean-seven moves, which stayed duplicated for a long window by design. There is no
+  reason to duplicate Telemetry.cs/AwakeAge/BotBackup/ProtocolRunner/BotLog/profiler
+  the way the clean files were duplicated, because (unlike those) NOTHING in Framesaver
+  can call them once the bridge rewires land — a lingering Framesaver original would be
+  dead code from the moment this commit lands, not a safety net.
+- `AsyncDrainPatch.cs`'s class-split (diagnostics half to Ranger, suppression half
+  stays) is a SEPARATE unit, not folded into this commit — confirmed by re-reading the
+  strip-list ruling reference above; it is its own seam with its own class-split
+  precedent (same shape as `AsyncWorkerTimingPatches`), not capstone-coupled by the
+  general rule (Telemetry.cs does not read AsyncDrain's diagnostic state directly the
+  way it reads AwakeAge/BotBackup/ProtocolRunner — it reads `AsyncDrain.Drained`/
+  `.GcSuspended` etc. which are ALREADY bridged via `RangerBridge.PublishAsyncDrain`).
+  Worth a follow-up unit after the capstone lands and verifies clean, not before.
+- `DistanceGridSpawn.cs` was archived entirely (Sophia's ruling), not part of any
+  remaining move.
+- The Ranger README's no-terminal usage story (DESIGN.md's Gate-2 risk) — still open,
+  still not blocking, still worth doing before Sophia needs to touch Ranger directly.
