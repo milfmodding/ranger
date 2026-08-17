@@ -399,6 +399,31 @@ Windows backslashes silently match nothing and produce an empty filter with no c
 **Net:** 7 of ~17 measurement files now live in Ranger (2 skeleton-era + 5 batch-1),
 all inert-by-design until seam 5 wires the lifecycle.
 
+### Batch 2 LANDED (2026-08-17 ~05:25Z): +3 files, and a FOURTH audit axis
+
+Moved (merges `0e37306` + `c2f621f`, namespace switch `6b7558d`, builds clean):
+`LateUpdateTimingPatches.cs`, `UpdateManualTimingPatches.cs`, and — landed as an
+inert dependency — `AwakeAgeTiming.cs`.
+
+**Fourth audit axis, found by the compiler:** candidate→candidate references.
+`UpdateManualTiming` line 263 reads `AwakeAge` (both measurement files; no earlier
+axis checked measurement-referencing-measurement). AwakeAge's copy follows the
+PlayerLoopProfiler precedent — inert duplicate now, seam-3 wiring (BotStandBy-
+UpdatePatch's Ended/Woke calls through the bridge) still at cutover, NOT now.
+Also verified in this pass: LateTiming/UpdateManualTiming/DistanceGridSpawn's
+`Telemetry` mentions are all doc comments (code-clean); `BotBackupPatches` is
+**reclassified seam-bearing** (its file contains one of the nine PublishTelemetry
+wrappers → references Framesaver's RangerBridge; the Ranger copy must drop or
+repoint that wrapper when it moves); `DistanceGridSpawn` is **blocked on seam-5
+config** (its real Plugin.GridSpawn* reads won't compile in Ranger until those
+keys exist in Ranger's Plugin.cs).
+
+**Net after batch 2: 10 of ~17 measurement files Ranger-side** (2 skeleton-era,
+5 batch-1, 3 batch-2), all inert-by-design. Remaining: DistanceGridSpawn (seam-5),
+BotBackup (seam-bearing reclass), BotLog (moves WITH Telemetry.cs),
+AsyncWorkerTiming (split ruling), ProtocolRunner (test plan), AsyncDrain +
+SleepingBot mixed-file halves (splits), and Telemetry.cs itself.
+
 **Deploy note for this session:** Framesaver HEAD is now `582afb1` (TickMath, on top of
 the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A…` md5
 quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
