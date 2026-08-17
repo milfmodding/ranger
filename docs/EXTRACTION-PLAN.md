@@ -275,6 +275,46 @@ config/lifecycle hook. The `TryGet*` read direction the earlier plan sections wo
 about is NOT needed for any current crossing — the 9 publish wrappers already inverted
 the reads at flush cadence.
 
+### Test-coupling pass over the clean seven (2026-08-17 ~04:50Z)
+
+`tests/unwrap/Program.cs` (reflection-based, loads Framesaver.dll) grepped per class:
+
+- **Zero test references (fully clean at both levels now):** AsyncWorkerTiming,
+  LateTiming, SpawnAttempts, Census, DistanceGridSpawn.
+- **Small self-contained behavioral test blocks:** UpdateManualTiming (bucket arithmetic,
+  drives the statics directly), BossSpawnGate (forced-but-excluded intersection and the
+  null-vs-empty distinction). Each is one `Console.WriteLine` section with its own
+  `asm.GetType` — migration shape is option (b) from the earlier section: ONE test
+  program that loads both assemblies, moved classes' blocks repointed at
+  `Assembly.LoadFrom("Ranger.dll")`. Concrete now, not an open option.
+- For later seams: BotLog (4 refs), AwakeAge (2 refs), StandByTransitions (2 refs) have
+  similar small blocks plus NDJSON-literal string checks (`",\"awakeAge\":"` etc.) — the
+  literal checks must follow whichever assembly emits the string after the move.
+
+### Seam 2 DONE — with a correction to this doc's own earlier claim (2026-08-17 ~04:55Z)
+
+**Correction:** seam 2 was described above as "fits the existing Event(name, ms) shape
+directly." That was WRONG: `TelemetryBus.Event` is last-write-wins per window, while
+StandByTransitions' semantic is `wokenMs / woken` = cost of ONE wake — count AND summed
+duration must both accumulate, and a single Event per transition would silently keep
+only the final transition's length while looking like a total. Caught while writing the
+call sites, before anything shipped. Same lesson shape as the JIT-gate retraction: read
+the actual surface before claiming a fit.
+
+**Landed:**
+- Ranger `f20a180`: `TelemetryBus.Sum(key, delta)` added — the accumulating double
+  counterpart to Count (with `TryGetSum` + ResetWindow coverage). Event keeps
+  last-write-wins; the distinction is documented on Sum itself.
+- Framesaver `e26ec47`: `RangerBridge.PublishStandByTransition(woken, ms)` + both call
+  sites in BotStandByUpdatePatch (wake ~line 222, sleep ~line 389), gated on Present,
+  one timestamp read per site feeding the direct call (ticks) and the publish (ms via
+  TickMath). Additive, zero NDJSON change. Both mods build clean.
+
+**Seam status:** 1 of 5 closed (seam 2). Remaining: AwakeAge (per-bot events, needs
+bot-identity payload), BotLog.StandByAssigned (needs role-predicate booleans folded into
+the payload — the one genuine move→stay read), AsyncDrain diagnostics (class-split),
+Plugin.cs lifecycle/config (moves to Ranger's Plugin.cs).
+
 **Deploy note for this session:** Framesaver HEAD is now `582afb1` (TickMath, on top of
 the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A…` md5
 quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
