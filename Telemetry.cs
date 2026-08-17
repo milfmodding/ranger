@@ -1576,6 +1576,11 @@ namespace Framesaver
             ModCompat.AppendDetected(sb);
             sb.Append('}');
 
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Same call site as
+            // AppendDetected immediately above, for the same reason - detection is already forced
+            // here regardless of caller order. Does not change the NDJSON "mods" block above.
+            ModCompat.PublishTelemetry();
+
             float elapsed = Mathf.Max(0.001f, Time.realtimeSinceStartup - _windowStart);
 
             // The window's OWN duration, measured, not the configured one.
