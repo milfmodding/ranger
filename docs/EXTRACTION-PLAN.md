@@ -226,3 +226,57 @@ That is three real phases, not one.
 - 2026-08-16 22:0x — skeleton created (csproj, Plugin.cs, docs, .gitignore), repo cloned
   and confirmed empty/pushable. Next: re-verify the file inventory against current
   Framesaver source (step 2 above) before any `git mv`.
+
+## Phase 2 boundary audit — COMPLETE (2026-08-17 ~04:45Z, post-fix session)
+
+With Phase 1 (the 9 publish wrappers + the Present-gate fix, Framesaver `886c4bd`)
+landed, the full bidirectional audit of every measurement-only candidate against every
+staying file (Plugin.cs, the 8 shipping classes, RangerBridge, the staying half of
+AsyncDrainPatch) is done. Class-name level, both directions, comments distinguished from
+code. Results:
+
+**Fully clean, move whole with zero surgery (production level; test level still needs the
+unwrap/Program.cs pass the plan already flags):**
+- `AsyncWorkerTimingPatches.cs`, `BossSpawnGatePatches.cs`, `LateUpdateTimingPatches.cs`
+  (LateTiming), `SpawnAttemptPatches.cs`, `UpdateManualTimingPatches.cs`,
+  `ComponentCensusPatches.cs` (its SleepingBotAnimatorPatch mention is a comment),
+  `DistanceGridSpawn.cs` (RoleSleepDistance mention is a comment).
+
+**Resolved this session:** `AsyncDrainPatch` no longer references `AiTiming` — local
+`TickMath.ToMs` one-liner per the 2026-08-16 23:13Z ruling (Framesaver `582afb1`).
+
+**Real remaining seams, all one family — shipping code EMITS into measurement** (the
+same direction as the 9 publish wrappers, so TelemetryBus.Event is the right seam for
+each; what's new is they need richer payloads than (name, float)):
+1. `SleepingBotAnimatorPatch` → `AwakeAge.Ended/Woke(owner)` (lines ~551/555): shipping
+   notifies per-bot sleep/wake. Bus: per-bot event carrying bot identity.
+2. `BotStandByUpdatePatch` → `StandByTransitions.Woken/Slept(duration)` (~222/389):
+   transition cost events. Bus: Event(name, ms) — fits the existing shape directly.
+3. `BotStandByInitPointsPatch` → `BotLog.StandByAssigned(standBy, owner)` (×2): per-bot
+   assignment events. BotLog then reads `RoleStandByKnown/RoleAllowsStandBy` (shipping
+   predicates) to enrich the line — fold both booleans into the event payload so the
+   measurement side never calls back into shipping. **This is the one genuine move→stay
+   read left in the audit** and the payload widening removes it.
+4. `AsyncDrainPatch` diagnostics block → `ProfileBuild.TotalMs`, `BundleLoad.SyncMsTotal`,
+   `RaidInit.TotalMs` deltas around each drain: measurement embedded in the mixed file.
+   Resolves via the class-split the strip list already ruled for AsyncDrainPatch.cs —
+   the diagnostics half (including these reads) moves; a postfix on the drain method
+   replaces the inline instrumentation, and the staying budget lever keeps none of it.
+5. `Plugin.cs` → `BotLog.Subscribe()`, `PlayerLoopProfiler.Install()/ArmFrameGap()`,
+   grid-spawn/census config binds: the telemetry lifecycle + config block the plan
+   already schedules to move into Ranger's Plugin.cs (fresh config per Sophia's
+   2026-08-16 23:03Z ruling, no migration).
+
+**Sequencing consequence:** Phase 2 is now unblocked for the clean seven as pure
+git-filter-repo moves (test-coupling pass first for each). The five seams above are the
+complete list of non-mechanical work between here and moving `Telemetry.cs` itself.
+None of them require a read API: every remaining crossing is an event emission or a
+config/lifecycle hook. The `TryGet*` read direction the earlier plan sections worried
+about is NOT needed for any current crossing — the 9 publish wrappers already inverted
+the reads at flush cadence.
+
+**Deploy note for this session:** Framesaver HEAD is now `582afb1` (TickMath, on top of
+the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A…` md5
+quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
+(both contain the gate fix); match the ndjson header's commit stamp to whichever is
+deployed.
