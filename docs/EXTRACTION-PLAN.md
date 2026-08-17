@@ -335,6 +335,40 @@ Sequencing stays: clean-seven copies first (establishes the repeatable move proc
 zero Framesaver-side edits), then seam-bearing moves one at a time, each followed by a
 verification raid before the next.
 
+### Mixed-file finding: AsyncWorkerTimingPatches is NOT clean (2026-08-17 ~05:10Z)
+
+The first batch move attempt (AsyncWorkerTimingPatches.cs) built the merge cleanly and
+then FAILED TO COMPILE in Ranger, exposing an audit blind spot: the Phase-2 audit checked
+candidate→shipping-class references but not candidate→`Plugin` config references. Full
+re-audit of all fourteen candidates against `Plugin.*`:
+
+- **`AsyncWorkerTimingPatches.cs` — MIXED FILE, same shape as AsyncDrainPatch.cs.**
+  `AsyncWorkerFixedUpdatePatch`'s Prefix implements the `DrainInUpdateOnly` shipping
+  lever's actual behavior: when the flag is set it skips `AsyncWorker.FixedUpdate`
+  entirely (the "drain completions in Update only" feature, C3→A-bucket keep). The
+  timing half is measurement; the suppression half is shipping. Strip-list precedent
+  (the explicitly-ruled AsyncDrainPatch class-split) says: suppression stays in
+  Framesaver, timing moves. **Extending that split to this second file is ruling-shaped
+  — flagged to Sophia 2026-08-17 ~05:15Z; do not cut shipping behavior on extrapolation
+  (the C4 lesson, applied to the audit that missed it).**
+- `BotLogPatches.cs` reads `Plugin.ForceStandByForAllRoles` (logs it into the event
+  line) and `DistanceGridSpawn.cs` reads the GridSpawn* keys — both read-only, both
+  B-bucket config that moves with its file per the strip list; they fold into the seam-5
+  config-block move, not new seams.
+- Everything else: clean.
+
+**Git state:** merge `e616a3a` landed the file's history into Ranger; revert `9532c71`
+removed it from the tree without losing history. When the split is ruled, re-landing is
+`git checkout e616a3a -- Patches/AsyncWorkerTimingPatches.cs` + the split itself — the
+history merge never needs redoing.
+
+**Corrected clean list (six, was seven):** AsyncWorkerTimingPatches moves OUT;
+LateUpdateTimingPatches, SpawnAttemptPatches, ComponentCensusPatches,
+DistanceGridSpawn (config reads noted above), UpdateManualTimingPatches, BossSpawnGate
+move whole. First-batch procedure (filter-repo via `python -m git_filter_repo` — not on
+git's PATH on this machine — then unrelated-histories merge, then a Ranger-side namespace
+switch commit) is proven end-to-end by this attempt.
+
 **Deploy note for this session:** Framesaver HEAD is now `582afb1` (TickMath, on top of
 the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A…` md5
 quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
