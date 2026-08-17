@@ -805,3 +805,70 @@ DLLs exist to build against).
   remaining move.
 - The Ranger README's no-terminal usage story (DESIGN.md's Gate-2 risk) — still open,
   still not blocking, still worth doing before Sophia needs to touch Ranger directly.
+
+## CORRECTION, found immediately after history-merge (2026-08-17 ~08:18Z): the plan
+above is missing the reverse-direction dependency and cannot be executed as written
+
+The commit sequence above only accounted for the 4 capstone-coupled classes
+(AwakeAge/BotBackup/ProtocolRunner/BotLog) and treated everything else `Telemetry.cs`
+touches as "already bridged via the 9 `RangerBridge.PublishX()` calls, so it's fine."
+**That conflates two different relationships that happen to share the same 9 classes:**
+the PUBLISH calls (`RangerBridge.PublishAnimatorCull` etc.) are shipping classes handing
+facts OUTWARD to the bus, additive, already correct, already verified live. Separately,
+**`Telemetry.cs` itself directly reads all 9 shipping classes' OWN STATE** to build its
+NDJSON — `Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame`,
+`.BossGroupWake.Counts(...)`, `AICoreControllerUpdatePatch.LiveAgents`,
+`LongRangeExemption.Count`, `ModCompat.SuppressSlicing`,
+`BotStandByUpdatePatch.RoleStandByKnown/RoleAllowsStandBy`, `AsyncDrain.Drained` —
+29 direct `Framesaver.Patches.*`/bare-class references total (grepped against Ranger's
+now-merged copy of `Telemetry.cs`, 2026-08-17 ~08:16Z).
+
+**`Ranger.csproj` has NO project/assembly reference to `Framesaver.dll`, and never has**
+(checked — deliberately absent, matching "Ranger must never be a hard dependency of
+Framesaver," which until now was read as one-directional: Framesaver→Ranger soft,
+Ranger never needed anything FROM Framesaver). Once `Telemetry.cs` is Ranger's only
+copy, these 29 references do not compile — there is nothing for Ranger to resolve
+`Framesaver.Patches.SleepingBotAnimatorPatch` against. **This is the identical hazard
+`RangerBridge.cs`'s own doc comment describes** (the JIT resolves every type referenced
+in a method's IL when that method compiles, not only the branch taken) — pointed the
+opposite direction from every case handled so far in this whole extraction.
+
+**This was missed because every previous seam in this doc checked "does Telemetry.cs
+read the MOVING class's state" (the capstone-coupling rule) but never checked "does
+Telemetry.cs read a STAYING class's state" — which was assumed covered by the publish
+wrappers alone. It is not: the wrappers make the shipping class's facts available to
+the bus, but Telemetry.cs's OWN CODE, sitting right next to each wrapper call, still
+reads the class directly on the SAME LINE RANGE, unchanged.** Concretely: line 1497
+calls `LongRangeExemption.PublishTelemetry()` (fine, additive, already correct) but
+line 1492, three lines above it, reads `LongRangeExemption.Count` directly into the
+NDJSON — and THAT read is what breaks once Telemetry.cs is Ranger-side with no
+reference to Framesaver.
+
+**Two candidate shapes, not yet chosen:**
+(a) Replace every one of Telemetry.cs's direct reads with `TelemetryBus.TryGet*` —
+requires each of the 9 shipping classes to ALSO publish the SPECIFIC values Telemetry
+currently reads directly (not just what each `PublishTelemetry()` already sends), which
+is more shipping-code surgery than this doc has scoped anywhere so far: 9 classes,
+roughly one new bus key per NDJSON field currently read directly (`animCulled`,
+`animCulledOffScreen`, `animCulledEngine`, `bossGroups.linked`, `bossGroups.heldAwake`,
+`agents.live/pendingRemoval/removedTotal`, `snipersAwake`, `suppressSlicing`,
+`roleSleepDist`/`roleWakeDist`, plus the two `RoleStandByKnown`/`RoleAllowsStandBy`
+predicates called per-bot inside `CountBots()`, which is a loop — a `TryGet` per bot
+per window is a different cost shape than a static field read and needs its own look).
+(b) A `FramesaverBridge` mirror of `RangerBridge` — NoInlining-wrapped, assembly-
+qualified `Type.GetType`/reflection-based resolution of `Framesaver.Patches.X`, guarded
+for Framesaver's absence — living in RANGER, isolating these 29 reads the same way
+`RangerBridge` isolates Framesaver's 9 publish sites today. Cheaper to write (mechanical,
+same shape already proven) but changes Ranger's posture: today Ranger has no
+dependency on Framesaver at all, even a soft/reflection one; this would give it one,
+just for `Telemetry.cs`'s read half. Needs Sophia's read on whether that's acceptable
+given Ranger is meant to be a standalone kit — a `Telemetry.cs` that reads Framesaver
+reflectively is not "standalone" in the same sense GpuTelemetry/PlayerLoopProfiler are.
+
+**Not deciding here.** Flagged to the room 2026-08-17 ~08:18Z. The safe state right now:
+only the additive history-merge (Telemetry.cs/BotBackupPatches.cs/ProtocolRunner.cs/
+BotLogPatches.cs into Ranger, commit `4c3ae81`) has landed — no namespace switch, no
+shipping-code edits, nothing deployed. Both mods still build and run exactly as before;
+Ranger's merged copies are inert duplicates, same posture as every prior batch before
+its namespace-switch commit. **Stopping here to get a ruling on (a) vs (b) before any
+further code**, same discipline as every other design fork this session.
