@@ -315,6 +315,26 @@ bot-identity payload), BotLog.StandByAssigned (needs role-predicate booleans fol
 the payload — the one genuine move→stay read), AsyncDrain diagnostics (class-split),
 Plugin.cs lifecycle/config (moves to Ranger's Plugin.cs).
 
+### Seam-3 ordering correction (2026-08-17 ~05:00Z)
+
+Reading `AwakeAgeTiming.cs` before wiring it surfaced an ordering constraint the list
+above glossed over: `AwakeAge.Woke/Ended` take a **`BotOwner` reference** (the class keys
+two dictionaries by it), so this seam cannot be pre-wired through the generic bus the
+way seam 2 was — the natural seam is a typed bridge call
+(`RangerBridge.NotifyAwakeAge…` → `Ranger.AwakeAge.Woke(owner)`), but a bridge method
+cannot name a Ranger-side type that doesn't exist until the file actually moves.
+
+**Correct order:** seams 3 and 4 (AwakeAge, BotLog) are wired *inside* their move
+commits — bridge method + gated call site added in Framesaver in the same commit that
+lands the Ranger-side copy — not as pre-move additive publishes. Seam 2 was pre-wireable
+only because its payload was a plain (bool, double) that the existing bus could carry.
+This also means the move commits for those two files carry behavior the raid must
+re-verify (not merely additive), unlike the clean-file moves.
+
+Sequencing stays: clean-seven copies first (establishes the repeatable move procedure,
+zero Framesaver-side edits), then seam-bearing moves one at a time, each followed by a
+verification raid before the next.
+
 **Deploy note for this session:** Framesaver HEAD is now `582afb1` (TickMath, on top of
 the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A…` md5
 quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
