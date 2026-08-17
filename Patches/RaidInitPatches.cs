@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -7,7 +7,7 @@ using EFT;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Times the tail of LocalGame.vmethod_1 - the raid initialisation that resumes inline inside a

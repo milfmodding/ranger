@@ -7,7 +7,7 @@ using EFT;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Bundle loading, measured three ways, because the first attempt only caught part of it.

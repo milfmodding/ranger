@@ -4,7 +4,7 @@ using EFT;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Splits the cost of constructing a bot Profile into its expensive parts.
