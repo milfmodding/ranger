@@ -1819,6 +1819,8 @@ namespace Framesaver
             GcControl.AppendCfg(sb);
             sb.Append('}');
 
+            TelemetryBus.InvokeWindowCallbacks(sb);
+
             sb.Append('}');
 
             Append(sb.ToString());
@@ -2036,9 +2038,10 @@ namespace Framesaver
             sb.Append(",\"frames\":").Append(taken);
             Num(sb, "spanMs", span);
             sb.Append(",\"frameMs\":[").Append(frames).Append(']');
+            TelemetryBus.InvokeMarkCallbacks(sb);
             sb.Append('}');
             Append(sb.ToString());
-            Plugin.LogSource.LogInfo("Framesaver mark: " + taken + " frames, " + Fmt(span) + " ms");
+            Plugin.LogSource.LogInfo("Ranger mark: " + taken + " frames, " + Fmt(span) + " ms");
         }
 
 
@@ -2128,6 +2131,7 @@ namespace Framesaver
             sb.Append('}');
 
             GpuTelemetry.AppendHeader(sb);
+            TelemetryBus.InvokeHeaderCallbacks(sb);
 
             sb.Append('}');
             Append(sb.ToString());
