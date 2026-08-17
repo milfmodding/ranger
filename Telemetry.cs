@@ -1461,6 +1461,13 @@ namespace Framesaver
             // the field that names the culprit rather than just locating it.
             sb.Append(",\"worstCallbacks\":");
             AsyncDrain.AppendTop(sb);
+
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
+            // the NDJSON above - GcSuspended/WorstCallbackMs/WorstCallbackName are read fresh, this is
+            // a separate statement after them. See AsyncDrain.PublishTelemetry for why Drained/
+            // Deferred/Truncated are deliberately NOT published from here (they reset per-frame, not
+            // per-window).
+            AsyncDrain.PublishTelemetry();
             Block(sb, "playerLate", _playerLate);
             Block(sb, "playerTick", _playerTick);
 
