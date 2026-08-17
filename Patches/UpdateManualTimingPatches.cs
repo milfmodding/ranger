@@ -6,7 +6,7 @@ using EFT;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Times BotOwner.UpdateManual, split by whether the bot was paused on

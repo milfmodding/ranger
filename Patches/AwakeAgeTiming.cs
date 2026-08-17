@@ -7,7 +7,7 @@ using Comfort.Common;
 using EFT;
 using UnityEngine;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// UpdateManual cost bucketed by how long the bot has been continuously
