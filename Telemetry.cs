@@ -1513,16 +1513,25 @@ namespace Framesaver
             Framesaver.Patches.BossGroupWake.Counts(out groupLinked, out groupHeld);
             sb.Append(",\"bossGroups\":{\"linked\":").Append(groupLinked)
               .Append(",\"heldAwake\":").Append(groupHeld).Append('}');
+            // Captured into locals rather than read inline three times: each of these three is a
+            // COMPUTED PROPERTY that walks a bot roster on every read (CulledOffScreen and
+            // CulledEngine each do their own pass, per SleepingBotAnimatorPatch's own doc comments).
+            // Reading them again from a separate publish call would double that walk cost every
+            // window for no reason - one read each, used for both the NDJSON below and the bus.
+            int animCulled = Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame;
+            int animCulledOffScreen = Framesaver.Patches.SleepingBotAnimatorPatch.CulledOffScreen;
+            int animCulledEngine = Framesaver.Patches.SleepingBotAnimatorPatch.CulledEngine;
+
             sb.Append(",\"bots\":{\"awake\":").Append(awake)
               .Append(",\"asleep\":").Append(asleep)
               .Append(",\"total\":").Append(awake + asleep)
-              .Append(",\"animCulled\":").Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame)
+              .Append(",\"animCulled\":").Append(animCulled)
               // What we MARKED, then what Unity actually culled. Beside, never
               // instead: animCulled keeps the meaning it has in every existing log,
               // so nothing in the corpus changes meaning retroactively. The ratio
               // is the fraction of the feature that is real.
               .Append(",\"animCulledOffScreen\":")
-              .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledOffScreen)
+              .Append(animCulledOffScreen)
               // Asked / honoured / reached the engine. The first two are gated
               // on the cull flag and this one deliberately is not, so a flag
               // flipped off mid-session reads as a disagreement rather than as
@@ -1530,7 +1539,7 @@ namespace Framesaver
               // NOT follow from its own feature being off - read it against
               // animCulled, never alone.
               .Append(",\"animCulledEngine\":")
-              .Append(Framesaver.Patches.SleepingBotAnimatorPatch.CulledEngine)
+              .Append(animCulledEngine)
               .Append(",\"exempt\":").Append(exempt)
               // BOTH former names are RETIRED, and the good one deliberately so.
               //
@@ -1556,6 +1565,12 @@ namespace Framesaver
             // RangerBridge.PublishBotStandByCounts for why this call lives here rather than on
             // BotStandByUpdatePatch itself.
             Framesaver.Patches.RangerBridge.PublishBotStandByCounts(awake, asleep, exempt, roleUnknown, standByRefused);
+
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE, the ninth and last
+            // of the shipping classes. Passes the SAME locals captured above for the NDJSON block -
+            // see SleepingBotAnimatorPatch.PublishTelemetry's doc comment for why this does not
+            // re-read the three computed properties a second time.
+            Framesaver.Patches.SleepingBotAnimatorPatch.PublishTelemetry(animCulled, animCulledOffScreen, animCulledEngine);
 
             // `slicing` is the EFFECTIVE state, not the requested one, and it is the same expression the
             // patch branches on at AICoreControllerUpdatePatch.cs:64 rather than a re-derivation of it.
