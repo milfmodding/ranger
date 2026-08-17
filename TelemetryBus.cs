@@ -54,6 +54,7 @@ namespace Ranger
 
         private static readonly Dictionary<string, int> _counts = new Dictionary<string, int>();
         private static readonly Dictionary<string, double> _events = new Dictionary<string, double>();
+        private static readonly Dictionary<string, double> _sums = new Dictionary<string, double>();
         private static readonly Dictionary<string, string> _tags = new Dictionary<string, string>();
 
         /// <summary>Accumulate a delta under `key`. Call once per occurrence; the bus sums.</summary>
@@ -62,6 +63,26 @@ namespace Ranger
             if (!Enabled) return;
             _counts.TryGetValue(key, out int current);
             _counts[key] = current + delta;
+        }
+
+        /// <summary>
+        /// Accumulate a double delta under `key`. Call once per occurrence; the bus sums.
+        ///
+        /// NOT the same shape as Event, and the difference is load-bearing: Event is
+        /// LAST WRITE WINS per window ("what is the current value of this fact"), while
+        /// Sum accumulates ("what is the total of all occurrences"). A duration that
+        /// occurs several times per window - a stand-by transition, a callback - read
+        /// through Event would silently report only the last occurrence's length and
+        /// LOOK like a total. First concrete caller: Framesaver's StandByTransitions
+        /// seam (woken/slept counts beside their tick sums, `wokenMs / woken` = cost of
+        /// one wake, which requires both halves to survive). Mirror of Count for the
+        /// duration/int split: Count carries the occurrence, Sum carries the magnitude.
+        /// </summary>
+        public static void Sum(string key, double delta)
+        {
+            if (!Enabled) return;
+            _sums.TryGetValue(key, out double current);
+            _sums[key] = current + delta;
         }
 
         /// <summary>Record a duration (or any float measurement) under `key`. Last write wins per window.</summary>
@@ -87,6 +108,7 @@ namespace Ranger
         /// </summary>
         public static bool TryGetCount(string key, out int value) => _counts.TryGetValue(key, out value);
         public static bool TryGetEvent(string key, out double value) => _events.TryGetValue(key, out value);
+        public static bool TryGetSum(string key, out double value) => _sums.TryGetValue(key, out value);
         public static bool TryGetTag(string key, out string value) => _tags.TryGetValue(key, out value);
 
         /// <summary>Clears all accumulated facts. Call at window close, before the next window's publishers fire.</summary>
@@ -94,6 +116,7 @@ namespace Ranger
         {
             _counts.Clear();
             _events.Clear();
+            _sums.Clear();
             _tags.Clear();
         }
     }
