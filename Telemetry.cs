@@ -1484,6 +1484,11 @@ namespace Framesaver
 
             sb.Append(",\"snipersAwake\":").Append(LongRangeExemption.Count);
 
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
+            // the NDJSON line above - LongRangeExemption.Count is read fresh by the .Append call,
+            // this is a separate statement after it.
+            LongRangeExemption.PublishTelemetry();
+
             // Two numbers because one cannot tell two very different zeroes
             // apart. `linked` says the boss/follower links formed at all -
             // TryFindBoss runs once, from Activate, with no retry, so a boss
@@ -2424,6 +2429,13 @@ namespace Framesaver
             }
 
             sb.Append("]}");
+
+            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. AppendRoleSleep
+            // runs once per session (WriteHeader's only caller), matching the cadence
+            // PublishTelemetry() is designed for - see its doc comment in RoleSleepDistance.cs for
+            // why this is not folded into the Effective/EffectiveWake getters themselves. Does not
+            // change the NDJSON this method emits above.
+            Framesaver.Patches.RoleSleepDistance.PublishTelemetry();
         }
 
         /// <summary>
