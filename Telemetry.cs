@@ -1055,7 +1055,8 @@ namespace Framesaver
             Framesaver.Patches.SleepingBotAnimatorPatch.ReadAndReset();
             LateTiming.Reset();
 
-            GpuTelemetry.Sample();
+            // (GpuTelemetry.Sample used to run here; the GPU instruments are archived
+            // 2026-08-17 - Sophia's ruling, SPT's problems are CPU-bound.)
             GcControl.Track();
 
             double frameMs = m != null ? m.GameFrameMeasurer.MeasureStatistics.LastValue : 0d;
@@ -1262,10 +1263,8 @@ namespace Framesaver
                 Num(sb, "heapDeltaMb", _lastHeapDeltaMb);
                 GcControl.AppendSpike(sb);
             }
-            // A spike that is all TimeUpdate and no drain is currently unattributable. gpuMs and presentWaitMs
-            // separate "the GPU was busy" from "the present call blocked for some other reason", and vram
-            // says whether the driver was evicting at the time.
-            GpuTelemetry.AppendSpike(sb);
+            // (gpuMs/presentWaitMs/vram spike fields used to append here; archived with the
+            // GPU instruments 2026-08-17.)
             sb.Append('}');
             Append(sb.ToString());
         }
@@ -2233,8 +2232,8 @@ namespace Framesaver
 
         private void OnDestroy()
         {
-            GpuTelemetry.Shutdown();
-
+            // (GpuTelemetry.Shutdown used to run here to dispose the ProfilerRecorder
+            // handles; archived with the GPU instruments 2026-08-17.)
             _writerStop = true;
             _pendingSignal.Set();
 
@@ -2298,7 +2297,8 @@ namespace Framesaver
                     _phases[i].Reset();
                 }
             }
-            GpuTelemetry.ResetWindow();
+            // (GpuTelemetry.ResetWindow used to run here; nothing left to reset after the
+            // instrument archive 2026-08-17.)
             GcControl.ResetWindow();
             _heapMb.Reset();
             _gameUpdateSamples.Clear();
