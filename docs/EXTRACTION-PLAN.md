@@ -369,6 +369,36 @@ move whole. First-batch procedure (filter-repo via `python -m git_filter_repo` �
 git's PATH on this machine — then unrelated-histories merge, then a Ranger-side namespace
 switch commit) is proven end-to-end by this attempt.
 
+### Batch 1 LANDED (2026-08-17 ~05:20Z): five files moved with history
+
+**Moved** (merge `d3303b3` + namespace switch `dfd7e16`, Ranger builds clean):
+`SpawnAttemptPatches.cs`, `BossSpawnGatePatches.cs`, `ComponentCensusPatches.cs`,
+`StandByTransitionTiming.cs`, `AiTickTimingPatches.cs` — nine commits of history each,
+including the 4.1-port lineage. All five verified zero-coupling on all three audit axes
+(shipping classes, Plugin config, Telemetry). Copies are INERT until Ranger's Plugin.cs
+wires them; Framesaver's originals still run. Same deliberate-duplication state as
+PlayerLoopProfiler/GpuTelemetry.
+
+**Procedure note that cost one retry:** filter-repo path arguments need FORWARD slashes;
+Windows backslashes silently match nothing and produce an empty filter with no commits
+(the merge then refuses on a branchless scratch — clean failure, nothing landed wrong).
+
+**Not in batch 1, with reasons recorded:**
+- `LateUpdateTimingPatches.cs`, `DistanceGridSpawn.cs`, `BotBackupPatches.cs`: Telemetry
+  mentions are likely doc comments but need code-vs-comment verification before moving
+  (DistanceGridSpawn additionally reads Plugin.GridSpawn* — seam-5 config).
+- `UpdateManualTimingPatches.cs`: `Telemetry.Fmt` reference needs the same verification
+  (Fmt is a private static on Telemetry; if real code, the file moves with the sampler
+  core unit).
+- `AwakeAgeTiming.cs`, `BotLogPatches.cs`: seam-3/4 ordering correction above (wire
+  inside move commits; BotLog additionally has four real Telemetry-static reads — it
+  moves WITH Telemetry.cs).
+- `AsyncWorkerTimingPatches.cs`: split ruling pending (this doc, above).
+- `ProtocolRunner.cs`: test-migration plan still open (earlier section).
+
+**Net:** 7 of ~17 measurement files now live in Ranger (2 skeleton-era + 5 batch-1),
+all inert-by-design until seam 5 wires the lifecycle.
+
 **Deploy note for this session:** Framesaver HEAD is now `582afb1` (TickMath, on top of
 the gate fix `886c4bd`); `bin/Release` holds `582afb1`'s build, so the `3F407D7A…` md5
 quoted in-room for `886c4bd` is stale. Either build is valid for the verification raid
