@@ -46,7 +46,6 @@ namespace Ranger
         public static ConfigEntry<BepInEx.Configuration.KeyboardShortcut> MarkKey;
         public static ConfigEntry<float> TelemetryWindow;
         public static ConfigEntry<float> SpikeEventMs;
-        public static ConfigEntry<bool> ProfilePlayerLoop;
         public static ConfigEntry<string> ExpandPhase;
 
         // AsyncDrain diagnostics (worstCallbacks): read by AsyncDrainPatch's diagnostics half,
@@ -105,11 +104,6 @@ namespace Ranger
                     "value, not the old code default of 100.",
                     (AcceptableValueBase)new AcceptableValueRange<float>(0f, 2000f)));
 
-            ProfilePlayerLoop = Config.Bind(
-                "Telemetry", "Profile player loop", true,
-                "Inject timing markers around every top-level Unity player-loop phase. This is what " +
-                "locates work that falls outside the game's own Update/FixedUpdate/render counters.");
-
             ExpandPhase = Config.Bind(
                 "Telemetry", "Do not expand phases", "",
                 "Comma-separated player-loop phases NOT to break into their child systems. Blank - " +
@@ -148,13 +142,12 @@ namespace Ranger
             new GameWorldPlayerTickPatch().Enable();
             new JobSchedulerLateUpdatePatch().Enable();
             new AmbientLightLateUpdatePatch().Enable();
-
-            if (ProfilePlayerLoop.Value)
-            {
-                PlayerLoopProfiler.Install();
-                PlayerLoopProfiler.ArmFrameGap();
-            }
-
+            // (PlayerLoopProfiler install/arm REVERTED 2026-08-17 seam-5 follow-up: the profiler
+            // and the sampler that reads its Snapshot are statically coupled within one assembly,
+            // and the sampler is still Framesaver-side until capstone. Moving only the install
+            // here inverted ownership at every raid-load rewrite - Framesaver's 5s re-arm re-owned
+            // the loop because its sampler reads its own copy. Ranger takes the profiler at
+            // capstone, TOGETHER with Telemetry.cs. The ProfilePlayerLoop bind goes with it.)
             // NOTE: the Telemetry sampler component itself is NOT added here yet. Telemetry.cs
             // still lives in Framesaver and still owns the ndjson until the capstone commit;
             // adding a second sampler now would double-write the file. Framesaver's Awake

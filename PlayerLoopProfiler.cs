@@ -131,7 +131,7 @@ namespace Ranger
             catch (Exception e)
             {
                 FrameGapArmed = false;
-                Plugin.LogSource.LogWarning("Framesaver: inter-frame gap not armed - " + e.Message
+                Plugin.LogSource.LogWarning("Ranger: inter-frame gap not armed - " + e.Message
                                             + ". endToStart will read null.");
             }
         }
@@ -350,13 +350,13 @@ namespace Ranger
 
                 PlayerLoop.SetPlayerLoop(root);
                 Installed = true;
-                Plugin.LogSource.LogInfo("Framesaver: player-loop profiler installed over " + _names.Length +
+                Plugin.LogSource.LogInfo("Ranger: player-loop profiler installed over " + _names.Length +
                                          " slots: " + string.Join(", ", _names));
             }
             catch (Exception e)
             {
                 Installed = false;
-                Plugin.LogSource.LogError("Framesaver: player-loop profiler install failed - " + e);
+                Plugin.LogSource.LogError("Ranger: player-loop profiler install failed - " + e);
             }
         }
 
@@ -492,7 +492,7 @@ namespace Ranger
                 }
             }
 
-            Plugin.LogSource.LogInfo("Framesaver player loop: expanded [" + string.Join(", ", expanded.ToArray())
+            Plugin.LogSource.LogInfo("Ranger player loop: expanded [" + string.Join(", ", expanded.ToArray())
                                      + "]" + (unmatched.Count > 0
                                          ? " - blocklist entries matching no phase: "
                                            + string.Join(", ", unmatched.ToArray())
