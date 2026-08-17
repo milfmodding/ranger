@@ -3,7 +3,7 @@ using EFT;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Traces the bot-creation chain, to find out what drives ~7.5 attempts per second in a raid whose bot

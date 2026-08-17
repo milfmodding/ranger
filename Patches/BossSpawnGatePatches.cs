@@ -7,7 +7,7 @@ using EFT.Bots;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Records, once per raid, the gates that decide whether a forced boss

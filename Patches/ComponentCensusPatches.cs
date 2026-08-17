@@ -9,7 +9,7 @@ using HarmonyLib;
 using SPT.Reflection.Patching;
 using UnityEngine;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Enumerates every component on a bot, alive and dead, so "does a corpse keep doing per-frame work"

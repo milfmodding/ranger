@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Framesaver.Patches
+namespace Ranger
 {
     /// <summary>
     /// Gross stand-by transitions per window, split by direction, with the
