@@ -38,6 +38,36 @@ namespace Ranger
     {
         public static ManualLogSource LogSource;
 
+        /// <summary>
+        /// Ranger's own build identity, mirrored from Framesaver's Plugin.cs static
+        /// constructor rather than shared with it: each assembly reports ITS OWN
+        /// AssemblyInformationalVersion, and Ranger's is now the one Telemetry.cs's
+        /// header line reads (capstone move - the sampler is Ranger-side and its
+        /// header should identify the assembly it actually runs in, not Framesaver's).
+        /// Same reasoning as the original: read once, safe body (no throw), empty
+        /// rather than absent when the attribute is missing.
+        /// </summary>
+        public static readonly string BuildVersion;
+        public static readonly string BuildCommit;
+
+        static Plugin()
+        {
+            string informational = "";
+
+            object[] attributes = typeof(Plugin).Assembly.GetCustomAttributes(
+                typeof(System.Reflection.AssemblyInformationalVersionAttribute), false);
+            if (attributes.Length > 0)
+            {
+                informational =
+                    ((System.Reflection.AssemblyInformationalVersionAttribute)attributes[0])
+                    .InformationalVersion ?? "";
+            }
+
+            int plus = informational.IndexOf('+');
+            BuildVersion = plus < 0 ? informational : informational.Substring(0, plus);
+            BuildCommit = plus < 0 ? "" : informational.Substring(plus + 1);
+        }
+
         // ---- Telemetry config ---------------------------------------------------------------
         public static ConfigEntry<bool> TelemetryEnabled;
         public static ConfigEntry<string> RunTag;

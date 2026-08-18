@@ -8,7 +8,7 @@ using HarmonyLib;
 using SPT.Reflection.Patching;
 using UnityEngine;
 
-namespace Framesaver.Patches
+namespace Ranger.Patches
 {
     /// <summary>
     /// One line per bot spawn and one per bot death.
@@ -143,13 +143,11 @@ namespace Framesaver.Patches
             sb.Append(",\"effective\":").Append(standBy.CanDoStandBy ? "true" : "false");
 
             sb.Append(",\"roleAllows\":");
-            if (!BotStandByUpdatePatch.RoleStandByKnown(bot))
             {
-                sb.Append("null");
-            }
-            else
-            {
-                sb.Append(BotStandByUpdatePatch.RoleAllowsStandBy(bot) ? "true" : "false");
+                bool known;
+                bool allowed;
+                TelemetryBus.TryAskBotStandBy(bot, out known, out allowed);
+                sb.Append(!known ? "null" : (allowed ? "true" : "false"));
             }
 
             // The arm this bot was assigned under, on the bot's own line.
@@ -184,13 +182,11 @@ namespace Framesaver.Patches
             // the confusion RoleStandByKnown exists to prevent, and it inflates
             // the exempt count with unknowns.
             sb.Append(",\"canStandBy\":");
-            if (!BotStandByUpdatePatch.RoleStandByKnown(bot))
             {
-                sb.Append("null");
-            }
-            else
-            {
-                sb.Append(BotStandByUpdatePatch.RoleAllowsStandBy(bot) ? "true" : "false");
+                bool known;
+                bool allowed;
+                TelemetryBus.TryAskBotStandBy(bot, out known, out allowed);
+                sb.Append(!known ? "null" : (allowed ? "true" : "false"));
             }
 
             sb.Append('}');
