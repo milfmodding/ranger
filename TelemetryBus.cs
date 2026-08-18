@@ -209,6 +209,45 @@ namespace Ranger
         private static Func<BotOwner, bool?> _botStandByPredicate;
         private static string _botStandByPredicateOwner;
 
+        // A single LIVE config-value reader, same one-slot shape as the bot stand-by
+        // predicate above and for the same reason: BotLogPatches.cs reads
+        // Plugin.ForceStandByForAllRoles.Value on EVERY bot-spawn/stand-by event, not once
+        // per window, so it cannot be folded into the window callback's cfg dump the way
+        // the other 27 config fields were (capstone finding, 2026-08-18) - that dump is
+        // per-window and this value is stamped per-BOT so a mixed-arm window can be told
+        // apart, exactly BotLog's own doc comment on `forced`. One boolean, one producer,
+        // replace-on-re-register.
+        private static Func<bool> _forceStandByForAllRolesReader;
+
+        /// <summary>
+        /// Registers the live reader for Plugin.ForceStandByForAllRoles.Value (Framesaver's
+        /// config, not Ranger's). Same shape and reasoning as
+        /// <see cref="RegisterBotStandByPredicate"/> - called once at Framesaver's Awake.
+        /// </summary>
+        public static void RegisterForceStandByForAllRolesReader(Func<bool> reader)
+        {
+            _forceStandByForAllRolesReader = reader;
+        }
+
+        /// <summary>
+        /// Asks the registered reader for the current forceAllRoles config value.
+        /// Returns false (the config default) if nothing is registered - same
+        /// fail-safe posture as every other bus query, never throws into the caller.
+        /// </summary>
+        internal static bool ForceStandByForAllRoles()
+        {
+            if (_forceStandByForAllRolesReader == null) return false;
+            try
+            {
+                return _forceStandByForAllRolesReader();
+            }
+            catch (Exception e)
+            {
+                Plugin.LogSource.LogWarning("Ranger: forceStandByForAllRoles reader threw - " + e);
+                return false;
+            }
+        }
+
         /// <summary>
         /// Registers a callback invoked once, at Ranger's own header write (plugin load,
         /// before any raid). Same replace-on-re-register and per-guid nesting as the

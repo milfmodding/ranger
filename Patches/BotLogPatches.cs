@@ -154,8 +154,13 @@ namespace Ranger.Patches
             // cfg carries it per window, but a window is a mixture of bots
             // assigned at different times - which is the whole reason this
             // line exists.
+            // Capstone finding: ForceStandByForAllRoles lives on Framesaver's Plugin, not
+            // Ranger's - direct read would not resolve once this file is Ranger-side.
+            // Routed through TelemetryBus's single registered config reader (same one-slot
+            // shape as TryAskBotStandBy above), since this is a per-BOT-EVENT read, not a
+            // per-window one, so it cannot fold into the window callback's cfg dump.
             sb.Append(",\"forced\":")
-              .Append(Plugin.ForceStandByForAllRoles.Value ? "true" : "false");
+              .Append(TelemetryBus.ForceStandByForAllRoles() ? "true" : "false");
 
             sb.Append('}');
             Emit(sb.ToString());
