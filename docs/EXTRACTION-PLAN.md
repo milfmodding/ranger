@@ -872,3 +872,111 @@ shipping-code edits, nothing deployed. Both mods still build and run exactly as 
 Ranger's merged copies are inert duplicates, same posture as every prior batch before
 its namespace-switch commit. **Stopping here to get a ruling on (a) vs (b) before any
 further code**, same discipline as every other design fork this session.
+
+## RESOLVED: Sophia's registered-callback design (2026-08-17 ~15:39Z-19:23Z)
+
+Neither (a) nor (b) above. Sophia proposed a third shape: **a callback registered by
+Framesaver, holding a delegate whose BODY is compiled inside Framesaver's own assembly**.
+Ranger holds and invokes an opaque `Action<StringBuilder>`/`Action` — it never needs to
+resolve `Framesaver.Patches.X` itself, because the delegate's body does that resolution
+where those types are ordinary in-assembly references. This is the same JIT-safety
+property `RangerBridge`'s `NoInlining` isolation gets by a different route (isolate the
+resolving CODE into a method that only compiles when actually called), applied the other
+direction. Zero reflection, zero widening of the bus's field vocabulary.
+
+Tau added two refinements (room, ~18:33Z): a THIRD callback for the once-per-session
+header (`WriteHeader`, separate append point from window/mark), and identified that
+`CountBots()`'s per-bot `RoleStandByKnown`/`RoleAllowsStandBy` predicates (called INSIDE a
+roster loop, not once per window) don't fit the `Action<StringBuilder>` shape at all —
+needs its own narrow registration.
+
+**Landed API** (`TelemetryBus.cs`, Ranger `1ba1364`): `RegisterHeaderCallback`,
+`RegisterWindowCallback`, `RegisterMarkCallback`, `RegisterRaidStartCallback`,
+`RegisterRaidEndCallback` (all `Action<StringBuilder>` except raid start/end which are
+bare `Action` — lifecycle hooks, not line contributors), plus `RegisterBotStandByPredicate`
+(single slot, not per-guid, since there is exactly one stand-by system: `Func<BotOwner,
+bool?>`, collapsing `RoleStandByKnown`+`RoleAllowsStandBy` into one nullable-bool
+predicate). A throwing callback is rolled back (mirrors `GpuTelemetry.Guarded`) and
+skipped for that invocation only, never de-registered.
+
+**Sophia's ruling on field placement** (~19:14Z): new callback-contributed fields use the
+NEW nested `"[modGuid]":{...}` shape from the start — NOT backward-compatible flat paths
+for the pre-existing fields this migration is moving. This means the ~80 `analysis/*.py`
+scripts and `harness/check-*.py` that read `bots.animCulled`, `bossGroups.linked`,
+`agents.live`, `snipersAwake`, `mods.*`, `cfg.*` etc. at their CURRENT flat paths will need
+a migration note (old path → new nested path) as part of this same unit — extra work,
+accepted deliberately for a cleaner shape going forward ("a lot less confusing on other
+users of Ranger who will not have that context of why only those fields are global").
+
+**Two more couplings found while wiring, same family as everything above, not yet in any
+prior list:**
+
+1. **`GcControl.cs`** (found ~19:19Z) — a shipping GC-tuning feature (time-slice/drive
+   tuning), reads `Plugin.GcTimeSliceMs`/`GcDriveMs`, calls `AsyncDrain.GcSuspended`,
+   called directly by `Telemetry.cs` for `ApplyConfig()`/`Drive()`/`Track()` (every FRAME,
+   from `Update()`/`Sample()`) and `AppendWindow()`/`AppendCfg()`/`AppendSpike()` (per
+   window/spike). Never in DESIGN.md's inventory. Found by an EXHAUSTIVE regex sweep of
+   every capitalized-dot reference in the merged file — confirmed no further couplings
+   exist by the same method, after three prior manual passes each missed something.
+   **Stays in Framesaver** (real behavior lever). The per-WINDOW methods
+   (`AppendWindow`/`AppendCfg`/`AppendSpike`) fold into the same window-callback fragment
+   as the 9 shipping classes. The per-FRAME methods (`ApplyConfig`/`Drive`/`Track`) are a
+   DIFFERENT shape — Ranger's sampler loop calls them, not the other way around, so this
+   is the same relationship the profiler/sampler pairing already has (Ranger's loop calls
+   OUT to Framesaver's `GcControl`, not `GcControl` publishing something Ranger reads back)
+   and needs its own small per-frame callback registration, or gets folded into whatever
+   mechanism ends up calling the profiler.
+
+2. **`AICoreControllerUpdatePatch._tickedSum`/`_liveSum` shape mismatch** (found ~06:10Z
+   next session) — `Telemetry.Sample()` (every FRAME) does `_tickedSum +=
+   AICoreControllerUpdatePatch.LastBrainsTicked; _liveSum += AICoreControllerUpdatePatch.
+   LiveAgents;`, accumulating into TELEMETRY'S OWN PRIVATE FIELDS across the whole window.
+   This is NOT the same shape as the existing `RangerBridge.PublishAICoreController` call
+   (which uses `TelemetryBus.Event` — last-write-wins per window, correct for the OTHER
+   four fields `LiveAgents`/`PendingRemoval`/`RemovedTotal`/`LastBrainsTicked` as
+   snapshotted facts) — `tickedSum`/`liveSum` need to ACCUMULATE across every frame of the
+   window, which is exactly what `TelemetryBus.Sum` is for (already built for the seam-2
+   StandByTransitions case). **Fix**: `AICoreControllerUpdatePatch`'s own per-frame Harmony
+   prefix (which already runs every frame, computing `LastBrainsTicked`/`LiveAgents`) adds
+   `TelemetryBus.Sum("aiCoreController.tickedSum", LastBrainsTicked)` and
+   `.Sum("aiCoreController.liveSum", LiveAgents)` calls, gated `RangerBridge.Present` same
+   as every other publish site. `Telemetry.Sample()` drops its two direct-read lines
+   entirely (no callback needed here — this is a plain `Sum`, not a fragment-builder,
+   since it's exactly two numbers with no formatting logic). The window-close fragment
+   reads `TelemetryBus.TryGetSum("aiCoreController.tickedSum", ...)` /
+   `TryGetSum("aiCoreController.liveSum", ...)` instead of `_tickedSum`/`_liveSum`.
+
+**Consequence for the callback body's exact contents**: the single Framesaver-registered
+window callback needs to build ALL of: `bossGroups` (`BossGroupWake.Counts`), `bots.
+animCulled*` (`SleepingBotAnimatorPatch`, three computed properties, read once and shared
+with the existing publish call per its own doc comment), `agents.live/pendingRemoval/
+removedTotal/slicing/suppressSlicing` (`AICoreControllerUpdatePatch`/`ModCompat`/`Plugin.
+BrainUpdatePeriod`; `tickedSum`/`liveSum` now via `TryGetSum` per the fix above, not a
+direct read), `snipersAwake` (`LongRangeExemption.Count`), `mods` (`ModCompat.
+AppendDetected`), the entire `cfg` block (~25 `Plugin.X` shipping-config reads plus
+`roleSleepDist`/`roleWakeDist` from `RoleSleepDistance`), and `GcControl.AppendCfg`. This
+is a genuinely large callback body — essentially everything Telemetry.cs's window line
+used to build directly, minus what already moved with the capstone-coupled classes.
+**This is one Framesaver-side method, registered once in Framesaver's Plugin.Awake(),
+gated on `TelemetryBus`/Ranger presence same as every other registration site.**
+
+**Progress so far (2026-08-17 19:xx – 2026-08-18 06:xx):**
+- `TelemetryBus.cs` callback API: Ranger `1ba1364`.
+- `Telemetry.cs`'s 3 write points (`WriteHeader`/`Flush`/`WriteMark`) invoke
+  `InvokeHeaderCallbacks`/`InvokeWindowCallbacks`/`InvokeMarkCallbacks`: Ranger `746a928`.
+- Mechanical namespace-strip on the 7 classes moving WITH Telemetry.cs (`AwakeAge`,
+  `BossSpawnGate`, `BotLog`, `Census`, `StandByTransitions`, `TriggerSubscribers`,
+  `UpdateManualTiming`) — `Framesaver.Patches.X` → bare `X`: Ranger `04a3dd9`. Confirmed
+  by a second audit pass that only the genuinely-staying classes (`BossGroupWake`,
+  `RoleSleepDistance`, `SleepingBotAnimatorPatch`) plus `RangerBridge` (which becomes DEAD
+  CODE once `Telemetry.cs` is Ranger-side — the two `RangerBridge.PublishBotStandByCounts`
+  calls at lines 1569/1571 can become plain `TelemetryBus.Event(...)` calls with no bridge
+  at all, since there's no cross-assembly boundary once this file lives in Ranger) remain
+  qualified.
+- **Still checkpoint-only, not a working build.** Next: write the actual Framesaver-side
+  callback body (the big one described above), remove the direct reads it replaces from
+  Telemetry.cs, wire `CountBots()` to `TryAskBotStandBy`, do the namespace declaration
+  switch itself (`namespace Framesaver` → `namespace Ranger` on the 4 merged files), the 3
+  shipping-bridge edits from the original capstone-sequence section above, register the
+  callback from Framesaver's `Plugin.cs`, `tests/unwrap/Program.cs`, the field-mapping doc,
+  verification raid.
