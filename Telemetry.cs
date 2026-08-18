@@ -360,7 +360,7 @@ namespace Framesaver
             // would otherwise never fire and its line would vanish - and "the subject was destroyed" is
             // itself the finding, so losing it silently is the one outcome the error line exists to
             // prevent. Both calls are a timestamp compare and an empty-queue check when idle.
-            Framesaver.Patches.Census.Tick();
+            Census.Tick();
             DrainCensus();
 
             // Both before the menu early-return, and for the same reason as the two calls above.
@@ -414,9 +414,9 @@ namespace Framesaver
                 // without this every raid inherits the previous raid's sleeping bots and animCulled
                 // reports them forever. See ResetForRaid.
                 Framesaver.Patches.SleepingBotAnimatorPatch.ResetForRaid();
-                Framesaver.Patches.Census.ResetForRaid();
-                Framesaver.Patches.BotLog.ResetForRaid();
-                Framesaver.Patches.AwakeAge.ResetForRaid();
+                Census.ResetForRaid();
+                BotLog.ResetForRaid();
+                AwakeAge.ResetForRaid();
                 _markOrdinal = 0;
                 // Re-reads the file too, so editing a protocol takes effect on the next raid rather
                 // than the next launch.
@@ -1357,26 +1357,26 @@ namespace Framesaver
             // window, not a distribution - the quantity wanted is a per-call mean
             // per bucket, so the divisor has to travel with the total.
             sb.Append(",\"updateManual\":");
-            Framesaver.Patches.UpdateManualTiming.Append(sb);
+            UpdateManualTiming.Append(sb);
 
             // Everything else here is per frame. A cost paid per TRANSITION is
             // invisible to all of it - smeared across whichever frames held a
             // transition, which reads as a tail rather than a level. Gross
             // counts, so `wokenMs / woken` is the cost of one wake.
             sb.Append(",\"standByTransitions\":");
-            Framesaver.Patches.StandByTransitions.Append(sb);
+            StandByTransitions.Append(sb);
 
             // updateManual's cost split by how long each bot has been
             // continuously awake. The buckets are the per-bot part: a window
             // with one old bot and ten young ones reports them separately,
             // which the pooled mean beside it cannot.
             sb.Append(",\"awakeAge\":");
-            Framesaver.Patches.AwakeAge.Append(sb);
+            AwakeAge.Append(sb);
 
             // -1 means the event's backing field could not be found, never 0.
             // Settles unbounded-but-cheap against bounded, which timing cannot.
             sb.Append(",\"triggerSubsMax\":")
-              .Append(Framesaver.Patches.TriggerSubscribers.Max());
+              .Append(TriggerSubscribers.Max());
 
             Block(sb, "jobSchedulerLate", _jobSched);
             Block(sb, "ambientLight", _ambientLight);
@@ -1407,10 +1407,10 @@ namespace Framesaver
             // the question "was this window's data collected under a forced
             // garrison" is asked of every window, and a value present only in
             // the window that observed it is a join waiting to be got wrong.
-            if (Framesaver.Patches.BossSpawnGate.Any)
+            if (BossSpawnGate.Any)
             {
                 sb.Append(",\"spawnGate\":");
-                Framesaver.Patches.BossSpawnGate.Append(sb);
+                BossSpawnGate.Append(sb);
             }
 
 
@@ -1827,13 +1827,13 @@ namespace Framesaver
 
             // Bot spawn/death lines, flushed after the window they were stamped
             // with so a reader meets the window before the events inside it.
-            Framesaver.Patches.BotLog.Drain(Append);
+            BotLog.Drain(Append);
 
             // Per-bot rows for the same window. Buckets answer the pooled
             // relation; these are what a WITHIN-bot age slope needs, because
             // the arms wake different populations and a bucket comparison
             // would carry that composition difference into the slope.
-            Framesaver.Patches.AwakeAge.DrainRows(Append, _window);
+            AwakeAge.DrainRows(Append, _window);
 
             _window++;
             CurrentWindow = _window;
@@ -2151,7 +2151,7 @@ namespace Framesaver
         private void DrainCensus()
         {
             string body;
-            while (Framesaver.Patches.Census.TryTakeLine(out body))
+            while (Census.TryTakeLine(out body))
             {
                 StringBuilder sb = new StringBuilder(body.Length + 256);
                 sb.Append("{\"type\":\"census\"");
@@ -2289,9 +2289,9 @@ namespace Framesaver
             SpawnAttempts.ResetWindow();
             AsyncDrain.ResetWindow();
             RaidInit.ResetWindow();
-            Framesaver.Patches.UpdateManualTiming.ResetWindow();
-            Framesaver.Patches.StandByTransitions.ResetWindow();
-            Framesaver.Patches.AwakeAge.ResetWindow();
+            UpdateManualTiming.ResetWindow();
+            StandByTransitions.ResetWindow();
+            AwakeAge.ResetWindow();
             _playerLate.Reset();
             _playerTick.Reset();
             if (_phases != null)
