@@ -1928,11 +1928,23 @@ namespace Framesaver
                 // Inside the same skip as the counts above, deliberately: these describe the same
                 // population, so `exempt + roleUnknown` can be read against `awake + asleep` without
                 // asking whether the two passes saw the same bots.
-                if (!BotStandByUpdatePatch.RoleStandByKnown(bot))
+                //
+                // Capstone finding: RoleStandByKnown/RoleAllowsStandBy live on
+                // BotStandByUpdatePatch, a shipping class staying in Framesaver - direct calls
+                // here would not resolve once this file is Ranger-side with no assembly
+                // reference to Framesaver. Routed through TelemetryBus.TryAskBotStandBy, which
+                // holds the ONE registered predicate (Sophia's callback design, Tau's catch for
+                // this exact per-bot-loop shape) - `known` false collapses BOTH "nothing
+                // registered" and "the predicate itself said cannot tell" to the same skip,
+                // which is the correct combined meaning per RoleStandByKnown's own semantics.
+                bool known;
+                bool allowed;
+                TelemetryBus.TryAskBotStandBy(bot, out known, out allowed);
+                if (!known)
                 {
                     roleUnknown++;
                 }
-                else if (!BotStandByUpdatePatch.RoleAllowsStandBy(bot))
+                else if (!allowed)
                 {
                     exempt++;
                 }
