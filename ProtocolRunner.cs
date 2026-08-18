@@ -6,7 +6,7 @@ using System.Reflection;
 using BepInEx.Configuration;
 using UnityEngine;
 
-namespace Framesaver
+namespace Ranger
 {
     /// <summary>
     /// Steps a measurement protocol on an operator keypress, stamping the arm into the telemetry.
@@ -470,13 +470,48 @@ namespace Framesaver
         /// silently omits whatever nobody thought to name, and here that would mean a protocol could not
         /// vary a setting for no reason the author could see. Reflection covers new settings the day they
         /// are added, and an unknown key still fails loudly above.
+        ///
+        /// Capstone finding (2026-08-17/18, EXTRACTION-PLAN.md's own "ProtocolRunner's
+        /// cross-assembly reflection into Plugin" section): this file's whole purpose is
+        /// reflecting over shipping config so a protocol .ini can toggle it - every deployed
+        /// protocol-*.ini assigns genuine SHIPPING settings (Brain update period, Cull
+        /// sleeping bot animators, Force for all roles, Drain completions in Update only,
+        /// Max delta time), not just telemetry knobs. Those fields live on Framesaver's
+        /// Plugin, which does NOT move with this file - so a bare `typeof(Plugin)` here would
+        /// silently bind to RANGER's own Plugin instead once this file lives in namespace
+        /// Ranger, and every protocol file would parse successfully while resolving zero keys
+        /// rather than failing loudly the way an unknown key already does.
+        ///
+        /// Fix: resolve Framesaver.Plugin BY ASSEMBLY-QUALIFIED NAME, explicitly, with a null
+        /// guard for the case Framesaver is absent while Ranger runs standalone (same
+        /// soft-dependency posture as RangerBridge's Present check, opposite direction -
+        /// Framesaver may not be installed, so this must not throw if the type cannot be
+        /// found). Ranger's OWN config fields (TelemetryWindow, ProtocolKey, MarkKey, etc.)
+        /// are ALSO included via typeof(Plugin) (this assembly's own Plugin, unqualified,
+        /// which now correctly means Ranger.Plugin) - a protocol needs to be able to name
+        /// either mod's settings, and BuildEntryMap already builds one shared map keyed by
+        /// config key name, so this is a second reflection pass merged into the same map
+        /// rather than a special case.
         /// </summary>
         private static Dictionary<string, ConfigEntryBase> BuildEntryMap()
         {
             Dictionary<string, ConfigEntryBase> map =
                 new Dictionary<string, ConfigEntryBase>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (FieldInfo f in typeof(Plugin).GetFields(BindingFlags.Public | BindingFlags.Static))
+            AddEntries(map, typeof(Plugin));
+
+            Type framesaverPlugin = Type.GetType("Framesaver.Plugin, Framesaver");
+            if (framesaverPlugin != null)
+            {
+                AddEntries(map, framesaverPlugin);
+            }
+
+            return map;
+        }
+
+        private static void AddEntries(Dictionary<string, ConfigEntryBase> map, Type source)
+        {
+            foreach (FieldInfo f in source.GetFields(BindingFlags.Public | BindingFlags.Static))
             {
                 ConfigEntryBase entry = f.GetValue(null) as ConfigEntryBase;
                 if (entry != null)
@@ -484,8 +519,6 @@ namespace Framesaver
                     map[entry.Definition.Key] = entry;
                 }
             }
-
-            return map;
         }
 
         private static string StripComment(string line)

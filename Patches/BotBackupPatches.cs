@@ -5,7 +5,7 @@ using EFT;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
-namespace Framesaver.Patches
+namespace Ranger.Patches
 {
     /// <summary>
     /// Instruments the backup-profile system, which turns out to be both open questions at once.
@@ -52,21 +52,28 @@ namespace Framesaver.Patches
         }
 
         /// <summary>
-        /// Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Publishes all five
-        /// fields, not just the two (Fired/Bailed) the NDJSON "botBackup" block currently emits -
-        /// Added/PendingMax/LargestRequest are real per-window facts this class already tracks and
-        /// there is no reason the bus should see less than the class knows. Routed through
-        /// RangerBridge rather than calling Ranger.TelemetryBus directly - see RangerBridge.cs.
+        /// Publishes all five fields, not just the two (Fired/Bailed) the NDJSON "botBackup" block
+        /// currently emits - Added/PendingMax/LargestRequest are real per-window facts this class
+        /// already tracks and there is no reason the bus should see less than the class knows.
+        ///
+        /// Capstone finding (2026-08-18): this used to route through RangerBridge.PublishBotBackup
+        /// (Framesaver.Patches.RangerBridge), which was correct while BotBackup lived in Framesaver
+        /// and TelemetryBus lived in Ranger - a genuine cross-assembly call needing the bridge's
+        /// NoInlining isolation. Now that BotBackup moves TO Ranger with the rest of Telemetry.cs's
+        /// capstone unit, it shares an assembly with TelemetryBus and the bridge has nothing left to
+        /// isolate - same resolution BotStandByUpdatePatch's aggregate counts already got (see
+        /// RangerBridge.cs's own historical doc comment on PublishBotStandByCounts for the identical
+        /// shape). Direct TelemetryBus.Event calls, no bridge, no Present check (TelemetryBus.Enabled
+        /// is Ranger's own internal gate and Event no-ops correctly when disabled).
         /// Called once per window from Telemetry.cs's Flush(), beside the existing "botBackup" block.
         /// </summary>
         internal static void PublishTelemetry()
         {
-            if (!RangerBridge.Present)
-            {
-                return;
-            }
-
-            RangerBridge.PublishBotBackup(Added, Fired, Bailed, PendingMax, LargestRequest);
+            TelemetryBus.Event("botBackup.added", Added);
+            TelemetryBus.Event("botBackup.fired", Fired);
+            TelemetryBus.Event("botBackup.bailed", Bailed);
+            TelemetryBus.Event("botBackup.pendingMax", PendingMax);
+            TelemetryBus.Event("botBackup.largestRequest", LargestRequest);
         }
     }
 
