@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using EFT;
+using Newtonsoft.Json.Linq;
 
 namespace Ranger
 {
@@ -149,20 +150,44 @@ namespace Ranger
         // (`"[guid]":{...}`) rather than flattening every registrant's fields into one
         // shared namespace the way Count/Event/Sum/Tag's string keys do.
         //
-        // A callback that throws is ROLLED BACK, not allowed to cost the whole line -
-        // same posture GpuTelemetry.Guarded already established for exactly this reason
-        // (a half-written StringBuilder segment is invalid JSON and costs the WHOLE
-        // window, which is a worse failure than one mod's fragment going missing).
+        // A callback that throws is SKIPPED, not allowed to cost the whole line - same
+        // posture GpuTelemetry.Guarded already established for exactly this reason (a
+        // half-written fragment is worse than one mod's fragment going missing).
+        //
+        // JObject, not Action<StringBuilder> (2026-08-18, Sophia's ruling, room 06:33Z):
+        // the callback builds a Newtonsoft.Json.Linq.JObject (`obj["key"] = value`, no
+        // manual escaping, no comma bookkeeping) instead of appending raw characters into
+        // a shared StringBuilder. Newtonsoft.Json.dll is already deployed in the game's
+        // own Managed folder (SPT itself uses it) so this needs no new bundling - see
+        // Ranger.csproj's added reference. InvokeAll below builds the combined JObject
+        // for every registrant, nests each one under "&lt;modGuid&gt;":{...} (ALL
+        // registrants, no legacy special-casing - the pre-existing corpus-critical
+        // fields keep their old flat paths through a field-mapping doc instead of a
+        // code-level exception, per Sophia's 19:14Z ruling), then serializes the whole
+        // thing and splices it into the caller's StringBuilder at the same point the
+        // old string-append version did.
 
-        private static readonly Dictionary<string, Action<StringBuilder>> _headerCallbacks =
-            new Dictionary<string, Action<StringBuilder>>();
-        private static readonly Dictionary<string, Action<StringBuilder>> _windowCallbacks =
-            new Dictionary<string, Action<StringBuilder>>();
-        private static readonly Dictionary<string, Action<StringBuilder>> _markCallbacks =
-            new Dictionary<string, Action<StringBuilder>>();
+        private static readonly Dictionary<string, Action<JObject>> _headerCallbacks =
+            new Dictionary<string, Action<JObject>>();
+        private static readonly Dictionary<string, Action<JObject>> _windowCallbacks =
+            new Dictionary<string, Action<JObject>>();
+        private static readonly Dictionary<string, Action<JObject>> _markCallbacks =
+            new Dictionary<string, Action<JObject>>();
         private static readonly Dictionary<string, Action> _raidStartCallbacks =
             new Dictionary<string, Action>();
         private static readonly Dictionary<string, Action> _raidEndCallbacks =
+            new Dictionary<string, Action>();
+
+        // Per-FRAME callback, added when the capstone move surfaced two more couplings that
+        // are neither "append a fragment" nor "raid boundary": SleepingBotAnimatorPatch.
+        // ReadAndReset() (called every Sample(), reads+clears per-frame cull counters before
+        // the window totals below can see them) and GcControl.ApplyConfig()/.Drive()/.Track()
+        // (GC tuning, driven every frame by the sampler loop - Ranger calling OUT to
+        // Framesaver, not Framesaver publishing IN). Both are "do a thing every frame", not
+        // "contribute NDJSON", so a bare Action - no StringBuilder - registered once per mod
+        // and invoked from the sampler's own per-frame Sample(), same call site every one of
+        // these methods already ran from before the move.
+        private static readonly Dictionary<string, Action> _perFrameCallbacks =
             new Dictionary<string, Action>();
 
         // Per-bot predicates are a fifth, narrower shape than the four Action-based
@@ -190,7 +215,7 @@ namespace Ranger
         /// window/mark callbacks. For static, once-per-session facts (device identity,
         /// build config) - a registrant with nothing header-shaped simply never calls this.
         /// </summary>
-        public static void RegisterHeaderCallback(string modGuid, Action<StringBuilder> callback)
+        public static void RegisterHeaderCallback(string modGuid, Action<JObject> callback)
         {
             if (string.IsNullOrEmpty(modGuid) || callback == null) return;
             _headerCallbacks[modGuid] = callback;
@@ -203,14 +228,14 @@ namespace Ranger
         /// a mod's plugin can only be loaded once per session, so a second Awake
         /// registering again is a reload, not two producers.
         /// </summary>
-        public static void RegisterWindowCallback(string modGuid, Action<StringBuilder> callback)
+        public static void RegisterWindowCallback(string modGuid, Action<JObject> callback)
         {
             if (string.IsNullOrEmpty(modGuid) || callback == null) return;
             _windowCallbacks[modGuid] = callback;
         }
 
         /// <summary>Registers a callback invoked once per mark event (Plugin.MarkKey press). Same replace-on-re-register and per-guid nesting as <see cref="RegisterWindowCallback"/>.</summary>
-        public static void RegisterMarkCallback(string modGuid, Action<StringBuilder> callback)
+        public static void RegisterMarkCallback(string modGuid, Action<JObject> callback)
         {
             if (string.IsNullOrEmpty(modGuid) || callback == null) return;
             _markCallbacks[modGuid] = callback;
@@ -228,6 +253,18 @@ namespace Ranger
         {
             if (string.IsNullOrEmpty(modGuid) || callback == null) return;
             _raidEndCallbacks[modGuid] = callback;
+        }
+
+        /// <summary>
+        /// Registers a callback invoked once EVERY FRAME, from the sampler's own Sample() -
+        /// for state that must be driven or reset every frame rather than contributing an
+        /// NDJSON fragment (SleepingBotAnimatorPatch.ReadAndReset, GcControl's ApplyConfig/
+        /// Drive/Track). Same replace-on-re-register as every other registration here.
+        /// </summary>
+        public static void RegisterPerFrameCallback(string modGuid, Action callback)
+        {
+            if (string.IsNullOrEmpty(modGuid) || callback == null) return;
+            _perFrameCallbacks[modGuid] = callback;
         }
 
         /// <summary>
@@ -282,27 +319,28 @@ namespace Ranger
         }
 
         /// <summary>
-        /// Invokes every registered window callback, each appended as its own
-        /// `,"&lt;modGuid&gt;":{...}` fragment. Called by the sampler core once per window,
-        /// after its own fields are written. A throwing callback is rolled back to where
-        /// `sb` stood before it ran (mirrors GpuTelemetry.Guarded) and its guid is skipped
-        /// for the rest of THIS window only - it is not de-registered, since a single bad
-        /// window must not silence a mod for the whole session.
+        /// Invokes every registered header callback, each nested as its own
+        /// `"&lt;modGuid&gt;":{...}` object, spliced into `sb` at the header write. Called
+        /// once at Ranger's own header write. A throwing callback has its fragment
+        /// omitted from this call's result entirely (nothing partial can leak into `sb`,
+        /// since JObject construction happens before any splice) and its guid is skipped
+        /// for the rest of THIS call only - it is not de-registered, since one bad call
+        /// must not silence a mod for the whole session.
         /// </summary>
         internal static void InvokeHeaderCallbacks(StringBuilder sb)
         {
-            InvokeAll(_headerCallbacks, sb);
+            SpliceFields(sb, InvokeAll(_headerCallbacks));
         }
 
         internal static void InvokeWindowCallbacks(StringBuilder sb)
         {
-            InvokeAll(_windowCallbacks, sb);
+            SpliceFields(sb, InvokeAll(_windowCallbacks));
         }
 
-        /// <summary>Invokes every registered mark callback. Same rollback posture as <see cref="InvokeWindowCallbacks"/>.</summary>
+        /// <summary>Invokes every registered mark callback. Same skip-on-throw posture as <see cref="InvokeWindowCallbacks"/>.</summary>
         internal static void InvokeMarkCallbacks(StringBuilder sb)
         {
-            InvokeAll(_markCallbacks, sb);
+            SpliceFields(sb, InvokeAll(_markCallbacks));
         }
 
         /// <summary>Invokes every registered raid-start callback. A throwing callback is logged and skipped; it does not roll back anything since there is no StringBuilder to roll back.</summary>
@@ -317,33 +355,57 @@ namespace Ranger
             InvokeAll(_raidEndCallbacks);
         }
 
-        private static void InvokeAll(Dictionary<string, Action<StringBuilder>> callbacks, StringBuilder sb)
+        /// <summary>Invokes every registered per-frame callback. Same posture as <see cref="InvokeRaidStartCallbacks"/> - logged and skipped on throw, never de-registered.</summary>
+        internal static void InvokePerFrameCallbacks()
         {
-            foreach (KeyValuePair<string, Action<StringBuilder>> entry in callbacks)
+            InvokeAll(_perFrameCallbacks);
+        }
+
+        // JObject version (2026-08-18): each registrant gets its own JObject to fill in,
+        // built independently so one callback's mistakes cannot corrupt another's object
+        // graph. A throwing callback is caught and that registrant's key is simply
+        // omitted from the result JObject for this call - the only invalid-JSON hazard
+        // the old StringBuilder version had to guard against (a half-written fragment)
+        // cannot happen here, since nothing is written to the shared output until the
+        // callback returns successfully.
+        //
+        // Nesting: ALL registrants nest under "<modGuid>":{...} in the returned JObject,
+        // no exceptions - see the field-mapping-doc note above this class for how the
+        // pre-existing corpus-critical fields keep their old flat NDJSON paths (a
+        // document, not a code branch here).
+        private static JObject InvokeAll(Dictionary<string, Action<JObject>> callbacks)
+        {
+            JObject result = new JObject();
+            foreach (KeyValuePair<string, Action<JObject>> entry in callbacks)
             {
-                int mark = sb.Length;
+                JObject fragment = new JObject();
                 try
                 {
-                    sb.Append(",\"").Append(Escape(entry.Key)).Append("\":{");
-                    int fieldsStart = sb.Length;
-                    entry.Value(sb);
-                    // A callback that appends nothing still gets a valid (empty) object
-                    // rather than a dangling "," from a comma-first field convention -
-                    // callers write fields as `,"key":value` (matching every AppendX
-                    // method in this codebase), so a leading comma is stripped if the
-                    // callback wrote at least one field.
-                    if (sb.Length > fieldsStart && sb[fieldsStart] == ',')
-                    {
-                        sb.Remove(fieldsStart, 1);
-                    }
-                    sb.Append('}');
+                    entry.Value(fragment);
+                    result[entry.Key] = fragment;
                 }
                 catch (Exception e)
                 {
-                    sb.Length = mark;
                     Plugin.LogSource.LogWarning("Ranger: telemetry callback for '" + entry.Key
                         + "' threw and was skipped for this window - " + e);
                 }
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Serializes a JObject's OWN FIELDS (not itself as a nested object) and splices
+        /// them into `sb` as `,"key":value` pairs, matching the comma-first convention
+        /// every AppendX method in this codebase already uses. Used by the sampler core
+        /// to fold the combined registrant JObject (each entry already nested under its
+        /// own modGuid key by InvokeAll above) into the NDJSON line it is building the
+        /// old-fashioned StringBuilder way.
+        /// </summary>
+        private static void SpliceFields(StringBuilder sb, JObject obj)
+        {
+            foreach (JProperty prop in obj.Properties())
+            {
+                sb.Append(',').Append(prop.ToString(Newtonsoft.Json.Formatting.None));
             }
         }
 
@@ -361,11 +423,6 @@ namespace Ranger
                         + "' threw - " + e);
                 }
             }
-        }
-
-        private static string Escape(string value)
-        {
-            return string.IsNullOrEmpty(value) ? "" : value.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
     }
 }

@@ -64,18 +64,19 @@ namespace Framesaver
         private readonly List<double> _gameUpdateSamples = new List<double>(8192);
         private readonly List<double> _frameSamples = new List<double>(8192);
 
-        // Brains ticked, summed over the window rather than read once at flush.
+        // Brains ticked, summed over the window. Capstone finding: this used to be TWO
+        // private fields, summed directly in Sample() every frame. Now accumulated inside
+        // AICoreControllerUpdatePatch itself via TelemetryBus.Sum (see Sample()'s own
+        // comment) and read back via TryGetSum at Flush() - no fields needed here anymore.
         //
         // `LastBrainsTicked` is overwritten every frame and its slicing value is `perFrame`, which divides
         // by `Time.deltaTime` - so a slow frame ticks MORE brains. Sampling it once per window would
         // correlate the measurement with frame time, which is the quantity the A/B is testing. Summing
         // removes the correlation and keeps the counts re-derivable.
         //
-        // `_liveSum` exists so the ratio has a matching denominator. Dividing a window sum by the
+        // The live-sum exists so the ratio has a matching denominator. Dividing a window sum by the
         // last frame's `live` would mix two populations, and the roster changes across a window.
         // Both are divided by `n`, which is the frame count these were accumulated under.
-        private long _tickedSum;
-        private long _liveSum;
 
         // Frame times for the mark lookback, in a ring that outlives ResetWindow.
         //
@@ -413,10 +414,16 @@ namespace Framesaver
                 // Player and only removes on a stand-by transition, which never fires at teardown - so
                 // without this every raid inherits the previous raid's sleeping bots and animCulled
                 // reports them forever. See ResetForRaid.
-                Framesaver.Patches.SleepingBotAnimatorPatch.ResetForRaid();
+                // Capstone finding: SleepingBotAnimatorPatch.ResetForRaid() moved to
+                // Framesaver's registered raid-start callback (TelemetryBus.
+                // RegisterRaidStartCallback("framesaver.ai.perf", ...)), invoked below via
+                // TelemetryBus.InvokeRaidStartCallbacks() alongside Census/BotLog/AwakeAge's
+                // own resets, which stay direct calls since those classes moved WITH
+                // Telemetry.cs and are ordinary same-assembly references now.
                 Census.ResetForRaid();
                 BotLog.ResetForRaid();
                 AwakeAge.ResetForRaid();
+                TelemetryBus.InvokeRaidStartCallbacks();
                 _markOrdinal = 0;
                 // Re-reads the file too, so editing a protocol takes effect on the next raid rather
                 // than the next launch.
@@ -470,8 +477,10 @@ namespace Framesaver
             }
 
             ApplyJobSchedulerOverrides();
-            GcControl.ApplyConfig();
-            GcControl.Drive();
+            // GcControl.ApplyConfig()/.Drive() used to run here directly - now inside
+            // the per-frame callback Sample() invokes (TelemetryBus.
+            // InvokePerFrameCallbacks()), same frame, same effective ordering, since
+            // Sample() is called unconditionally right below.
 
             Sample();
 
@@ -1015,14 +1024,26 @@ namespace Framesaver
             // frame these belong to.
             _lastAsyncUpdate = AsyncWorkerTiming.UpdateDrainMs;
             _lastAsyncFixed = AsyncWorkerTiming.FixedDrainMs;
-            _lastDrained = AsyncDrain.Drained;
+            // Capstone finding: AsyncDrain.Drained/.ResetFrame() are a Framesaver-only
+            // shipping class's per-frame state (the AsyncDrainPatch.cs budget lever, kept
+            // separate from its own diagnostics half per the strip-list's class-split
+            // ruling). Framesaver's per-frame callback (already invoked above via
+            // InvokePerFrameCallbacks, same call site as GcControl/SleepingBotAnimatorPatch)
+            // publishes the current Drained count via TelemetryBus.Event and calls
+            // ResetFrame() itself - this reads the published snapshot instead of the field
+            // directly. 0 if nothing has ever published (Ranger absent, or Framesaver's
+            // callback not yet registered), same "unpublished reads as the safe default"
+            // posture every other bridged read here uses.
+            double lastDrainedRaw;
+            _lastDrained = TelemetryBus.TryGetEvent("asyncDrain.drainedThisFrame", out lastDrainedRaw)
+                ? (int)lastDrainedRaw
+                : 0;
 
             _asyncUpdate.Add(_lastAsyncUpdate);
             _asyncFixed.Add(_lastAsyncFixed);
             _asyncFixedSkips += AsyncWorkerTiming.FixedSkips;
             AsyncWorkerTiming.Reset();
             _asyncDrained.Add(_lastDrained);
-            AsyncDrain.ResetFrame();
             // How many physics steps ran this frame - separates "many steps" from "one expensive step".
             if (m != null)
             {
@@ -1052,21 +1073,39 @@ namespace Framesaver
                     _phases[i].Add(phase[i]);
                 }
             }
-            Framesaver.Patches.SleepingBotAnimatorPatch.ReadAndReset();
+            // Capstone finding: SleepingBotAnimatorPatch.ReadAndReset() moved to
+            // Framesaver's registered per-frame callback (invoked below via
+            // TelemetryBus.InvokePerFrameCallbacks(), alongside GcControl's ApplyConfig/
+            // Drive/Track which have the same per-frame, sampler-calls-OUT shape).
+            TelemetryBus.InvokePerFrameCallbacks();
             LateTiming.Reset();
 
             // (GpuTelemetry.Sample used to run here; the GPU instruments are archived
-            // 2026-08-17 - Sophia's ruling, SPT's problems are CPU-bound.)
-            GcControl.Track();
+            // 2026-08-17 - Sophia's ruling, SPT's problems are CPU-bound. GcControl.Track()
+            // used to run here too - it's now inside the per-frame callback invoked above,
+            // alongside SleepingBotAnimatorPatch.ReadAndReset() - same call site, same
+            // frame, just routed through the registered callback instead of a direct call.)
 
             double frameMs = m != null ? m.GameFrameMeasurer.MeasureStatistics.LastValue : 0d;
             if (m != null)
             {
                 _gameUpdateSamples.Add(gameUpdate);
                 _frameSamples.Add(frameMs);
-                _tickedSum += AICoreControllerUpdatePatch.LastBrainsTicked;
-                _liveSum += AICoreControllerUpdatePatch.LiveAgents;
             }
+
+            // Capstone finding: tickedSum/liveSum used to be summed HERE, directly, every
+            // frame - AICoreControllerUpdatePatch is a shipping class staying in Framesaver,
+            // so a direct read would not resolve once this file is Ranger-side. Fixed at
+            // the source instead of bridged: AICoreControllerUpdatePatch now accumulates
+            // both sums itself via TelemetryBus.Sum, called every frame from its OWN Harmony
+            // prefix (Framesaver fc7b359) - the exact same values, summed at the point they
+            // are already computed, rather than re-read here. NOT read back via TryGetSum in
+            // THIS file (superseded by the later capstone finding below, same Flush() method):
+            // tickedSum/liveSum are two more of the 9-shipping-class fields that moved into
+            // Framesaver's OWN registered window callback body, which is where
+            // TryGetSum("aiCoreController.tickedSum"/"...liveSum") actually gets called, not
+            // here - see the "snipersAwake, bossGroups, bots.animCulled*, agents.*, mods, and
+            // the tickedSum/liveSum pair" comment further down this same method.
 
             _periodSamples++;
 
@@ -1433,7 +1472,10 @@ namespace Framesaver
               .Append(",\"inFlightMax\":").Append(BundleLoad.InFlightMax)
               .Append('}');
 
-            sb.Append(",\"gcSuspended\":").Append(AsyncDrain.GcSuspended);
+            // Capstone finding: gcSuspended and worstCallbacks (AsyncDrain.AppendTop) both
+            // read AsyncDrain directly - moved into Framesaver's registered window callback
+            // (nested under "framesaver.ai.perf":{...}) alongside everything else that
+            // reads a Framesaver-only shipping class.
 
             // Spawn attempts vs bots that actually resulted. `creates` should track botPool.calls; the
             // gap between `creates` and `botOwners` is how much of the profile and bundle work is wasted.
@@ -1451,17 +1493,11 @@ namespace Framesaver
               .Append(",\"buildPerFrameMax\":").Append(SpawnAttempts.BuildPerFrameMax)
               .Append('}');
 
-            // The single slowest completion callback in the window, resolved back to whoever queued it. This is
-            // the field that names the culprit rather than just locating it.
-            sb.Append(",\"worstCallbacks\":");
-            AsyncDrain.AppendTop(sb);
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
-            // the NDJSON above - GcSuspended/WorstCallbackMs/WorstCallbackName are read fresh, this is
-            // a separate statement after them. See AsyncDrain.PublishTelemetry for why Drained/
-            // Deferred/Truncated are deliberately NOT published from here (they reset per-frame, not
-            // per-window).
-            AsyncDrain.PublishTelemetry();
+            // (worstCallbacks used to be a direct AsyncDrain.AppendTop(sb) call here - moved
+            // into Framesaver's window callback with gcSuspended, above. AsyncDrain.
+            // PublishTelemetry() - the bus publish of GcSuspended/WorstCallbackMs/
+            // WorstCallbackName - stays where AsyncDrain's own code calls it; nothing here
+            // calls it directly anymore since nothing here reads AsyncDrain directly anymore.)
             Block(sb, "playerLate", _playerLate);
             Block(sb, "playerTick", _playerTick);
 
@@ -1489,130 +1525,17 @@ namespace Framesaver
             GpuTelemetry.AppendGraphicsConfig(sb);
             GcControl.AppendWindow(sb);
 
-            sb.Append(",\"snipersAwake\":").Append(LongRangeExemption.Count);
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
-            // the NDJSON line above - LongRangeExemption.Count is read fresh by the .Append call,
-            // this is a separate statement after it.
-            LongRangeExemption.PublishTelemetry();
-
-            // Two numbers because one cannot tell two very different zeroes
-            // apart. `linked` says the boss/follower links formed at all -
-            // TryFindBoss runs once, from Activate, with no retry, so a boss
-            // that activates after its follower leaves the rule inert while
-            // every other number looks healthy. `heldAwake` says the rule is
-            // currently buying something. See BossGroupWake.Counts.
-            int groupLinked;
-            int groupHeld;
-            Framesaver.Patches.BossGroupWake.Counts(out groupLinked, out groupHeld);
-            sb.Append(",\"bossGroups\":{\"linked\":").Append(groupLinked)
-              .Append(",\"heldAwake\":").Append(groupHeld).Append('}');
-            // Captured into locals rather than read inline three times: each of these three is a
-            // COMPUTED PROPERTY that walks a bot roster on every read (CulledOffScreen and
-            // CulledEngine each do their own pass, per SleepingBotAnimatorPatch's own doc comments).
-            // Reading them again from a separate publish call would double that walk cost every
-            // window for no reason - one read each, used for both the NDJSON below and the bus.
-            int animCulled = Framesaver.Patches.SleepingBotAnimatorPatch.CulledLastFrame;
-            int animCulledOffScreen = Framesaver.Patches.SleepingBotAnimatorPatch.CulledOffScreen;
-            int animCulledEngine = Framesaver.Patches.SleepingBotAnimatorPatch.CulledEngine;
-
-            sb.Append(",\"bots\":{\"awake\":").Append(awake)
-              .Append(",\"asleep\":").Append(asleep)
-              .Append(",\"total\":").Append(awake + asleep)
-              .Append(",\"animCulled\":").Append(animCulled)
-              // What we MARKED, then what Unity actually culled. Beside, never
-              // instead: animCulled keeps the meaning it has in every existing log,
-              // so nothing in the corpus changes meaning retroactively. The ratio
-              // is the fraction of the feature that is real.
-              .Append(",\"animCulledOffScreen\":")
-              .Append(animCulledOffScreen)
-              // Asked / honoured / reached the engine. The first two are gated
-              // on the cull flag and this one deliberately is not, so a flag
-              // flipped off mid-session reads as a disagreement rather than as
-              // a clean arm. It is the only field in this block whose zero does
-              // NOT follow from its own feature being off - read it against
-              // animCulled, never alone.
-              .Append(",\"animCulledEngine\":")
-              .Append(animCulledEngine)
-              .Append(",\"exempt\":").Append(exempt)
-              // BOTH former names are RETIRED, and the good one deliberately so.
-              //
-              // `deadAwake` and `standByBlocked` were TRANSPOSED at the CountBots
-              // call site from 2026-07-30 (7e254c0 + cb47968, sibling commits
-              // each taking position 5 on opposite sides of the call), so for
-              // five days every value under `deadAwake` was this count and every
-              // value under `standByBlocked` was the dead-awake one. Both `ref
-              // int`, so it compiled silently.
-              //
-              // `standByBlocked` was a GOOD name for this quantity and is still
-              // not reused, because five days of logs carry a hard zero under it.
-              // Reuse and a reader spanning the build boundary silently mixes a
-              // structural zero with real data and cannot tell which era a window
-              // came from. A new name makes a stale reader break instead of lie.
-              // See harness/check-modoff.py's RETIRED table for both.
-              .Append(",\"standByRefused\":").Append(standByRefused)
-              .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
-            // the NDJSON line above - awake/asleep/exempt/roleUnknown/standByRefused are read fresh
-            // by the .Append calls, this is a separate statement after them. See
-            // RangerBridge.PublishBotStandByCounts for why this call lives here rather than on
-            // BotStandByUpdatePatch itself.
-            //
-            // The Present gate is LOAD-BEARING and must not be removed: unlike the other publish
-            // sites, this one calls the bridge method DIRECTLY (the bot-count locals above exist
-            // only in this scope), and an ungated call here threw FileNotFoundException on the
-            // first window flush of every Ranger-absent session (47,420 frames, incident
-            // 2026-08-16 20:19; register reg-dec-2026-08-17T043214). The gate must stop the CALL:
-            // a check inside the bridge method would still see the method invoked and therefore
-            // JIT-compiled, and Mono resolves Ranger.TelemetryBus from its body at compile time.
-            if (Framesaver.Patches.RangerBridge.Present)
-            {
-                Framesaver.Patches.RangerBridge.PublishBotStandByCounts(awake, asleep, exempt, roleUnknown, standByRefused);
-            }
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE, the ninth and last
-            // of the shipping classes. Passes the SAME locals captured above for the NDJSON block -
-            // see SleepingBotAnimatorPatch.PublishTelemetry's doc comment for why this does not
-            // re-read the three computed properties a second time.
-            Framesaver.Patches.SleepingBotAnimatorPatch.PublishTelemetry(animCulled, animCulledOffScreen, animCulledEngine);
-
-            // `slicing` is the EFFECTIVE state, not the requested one, and it is the same expression the
-            // patch branches on at AICoreControllerUpdatePatch.cs:64 rather than a re-derivation of it.
-            // `cfg.brainPeriod` already reports what was asked for, and the failure this closes is the two
-            // disagreeing silently: BigBrain arrives as a SAIN dependency, ModCompat suppresses slicing, the
-            // arm reads as applied, the behaviour is vanilla, and the null reads as "the lever does nothing".
-            //
-            // `tickedSum` / `n` is brains per frame; `tickedSum` / `liveSum` is the fraction of the roster
-            // ticked per frame, which is the quantity that predicts frame time. Sums rather than a ratio
-            // because a ratio cannot be re-derived and cannot be pooled across windows.
-            bool slicing = Plugin.BrainUpdatePeriod.Value > 0f && !ModCompat.SuppressSlicing;
-            sb.Append(",\"agents\":{\"live\":").Append(AICoreControllerUpdatePatch.LiveAgents)
-              .Append(",\"pendingRemoval\":").Append(AICoreControllerUpdatePatch.PendingRemoval)
-              .Append(",\"removedTotal\":").Append(AICoreControllerUpdatePatch.RemovedTotal)
-              .Append(",\"slicing\":").Append(slicing ? "true" : "false")
-              .Append(",\"suppressSlicing\":").Append(ModCompat.SuppressSlicing ? "true" : "false")
-              .Append(",\"tickedSum\":").Append(_tickedSum)
-              .Append(",\"liveSum\":").Append(_liveSum);
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
-            // the NDJSON above - AICoreControllerUpdatePatch's fields are read fresh by the .Append
-            // calls above, this is a separate statement after them.
-            AICoreControllerUpdatePatch.PublishTelemetry();
-
-            // Which AI/co-op mods are present. Here rather than the header because the
-            // header runs in Awake, where reading ModCompat latches detection against a
-            // plugin list BepInEx has not finished filling. This block already calls
-            // SuppressSlicing two lines up, so detection is forced from this exact site
-            // regardless - the names are free, and no other site could say that.
-            sb.Append(",\"mods\":");
-            ModCompat.AppendDetected(sb);
-            sb.Append('}');
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Same call site as
-            // AppendDetected immediately above, for the same reason - detection is already forced
-            // here regardless of caller order. Does not change the NDJSON "mods" block above.
-            ModCompat.PublishTelemetry();
+            // Capstone finding (2026-08-17/18): snipersAwake, bossGroups, bots.animCulled*,
+            // agents.*, mods, and the tickedSum/liveSum pair all read the 9 shipping classes
+            // staying in Framesaver directly - moved into Framesaver's OWN registered window
+            // callback (TelemetryBus.RegisterWindowCallback("framesaver.ai.perf", ...)), which
+            // InvokeWindowCallbacks(sb) below already calls and nests under
+            // "framesaver.ai.perf":{...} automatically. The 9 shipping classes' existing
+            // RangerBridge.PublishX() calls are UNCHANGED - those are a separate, additive
+            // relationship (shipping class publishing OUT to the bus) from this one (Telemetry
+            // reading the class's state directly for its OWN fields), and only the second
+            // relationship moves here. See EXTRACTION-PLAN.md's capstone section for the full
+            // accounting of what moved and why.
 
             float elapsed = Mathf.Max(0.001f, Time.realtimeSinceStartup - _windowStart);
 
@@ -1730,94 +1653,10 @@ namespace Framesaver
             // early (intentional, and the line is still valid), or someone edited the setting mid-session
             // (every rate before and after is on a different denominator, and comparability is broken).
             // Same shape as null-versus-zero: one symptom, two meanings, so emit what discriminates them.
-            sb.Append(",\"cfg\":{\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value))
-              .Append(",\"standBy\":").Append(Bool(Plugin.StandByEnabled.Value))
-              .Append(",\"leakFix\":").Append(Bool(Plugin.FixAgentLeak.Value))
-              .Append(",\"brainPeriod\":").Append(Fmt(Plugin.BrainUpdatePeriod.Value))
-              .Append(",\"cullSleeping\":").Append(Bool(Plugin.CullSleepingBotAnimators.Value))
-              // Beside cullSleeping, not instead: the two select different
-              // POPULATIONS for the same mechanism, so a reader that saw only
-              // one would attribute a decoupled run's numbers to the coupled
-              // arm. animCulled follows whichever is on.
-              .Append(",\"cullAllBots\":").Append(Bool(Plugin.CullAllBotAnimators.Value))
-              .Append(",\"maxDelta\":").Append(Fmt(Time.maximumDeltaTime))
-              .Append(",\"skipLate\":").Append(Bool(Plugin.SkipSleepingLateUpdate.Value))
-              .Append(",\"skipTick\":").Append(Bool(Plugin.SkipSleepingWorldTick.Value))
-              .Append(",\"jobBudgetMs\":").Append(Fmt(Plugin.JobSchedulerBudgetMs.Value))
-              .Append(",\"jobSlowFrames\":").Append(Plugin.JobSchedulerSlowFrames.Value)
-              .Append(",\"asyncBudgetMs\":").Append(Fmt(Plugin.AsyncDrainBudgetMs.Value))
-              // Every option that changes behaviour belongs here, or a run cannot be told apart from the
-              // one before it. This was added late and cost a raid: the suspend-GC flag defaulted off, the
-              // log had no way to say so, and the result read as "the fix did nothing".
-              .Append(",\"suspendGc\":").Append(Bool(Plugin.SuspendGcDuringCallbacks.Value))
-              .Append(",\"reclaimStandBy\":").Append(Bool(Plugin.ReclaimStandBy.Value))
-              .Append(",\"deactivateSleeping\":").Append(Bool(Plugin.DeactivateSleepingBotState.Value))
-              .Append(",\"keepFighting\":").Append(Bool(Plugin.KeepFightingBotsAwake.Value))
-              // Both added 2026-07-27 for the same reason the comment above gives, and both were live
-              // omissions rather than theoretical ones.
-              //
-              // drainInUpdateOnly decides which player-loop phase the completion drain runs in, and it is
-              // toggleable mid-raid. The GPU session's cross-check invariant - raid-init collections must be
-              // a subset of the Update-phase gen0 count on that frame - is only valid while it is true. With
-              // it unrecorded, a run where it had been flipped would look like an instrument disagreeing
-              // with another instrument rather than a config difference.
-              //
-              // drainDiagnostics gates worstCallbacks entirely, so with it off there is no raidInitMs and no
-              // per-callback attribution at all - a run that measured nothing would be indistinguishable
-              // from a run that measured zero.
-              .Append(",\"drainInUpdateOnly\":").Append(Bool(Plugin.DrainInUpdateOnly.Value))
-              .Append(",\"drainDiagnostics\":").Append(Bool(Plugin.AsyncDrainDiagnostics.Value))
-              // The two globals every distance below is measured against.
-              // They are in the header `config` block too, but that is
-              // written once at session start and both are live-editable -
-              // which is the whole reason this block exists.
-              //
-              // A SETTING, NOT AN OUTCOME. Both are stamped onto a bot once,
-              // by BotStandByInitPointsPatch, so an edit mid-raid reaches
-              // only bots activating after it while this field still reads
-              // uniform over a mixed population. It says what was configured
-              // during this window, never what the bots on the field carry.
-              // The same caveat applies to the three role keys below.
-              .Append(",\"sleepDistance\":").Append(Fmt(Plugin.SleepDistance.Value))
-              .Append(",\"wakeDistance\":").Append(Fmt(Plugin.WakeDistance.Value))
-              // Both distances, not the sleep one plus a rule for deriving
-              // the other: the wake distance comes from the global
-              // hysteresis band. The globals arrived above only on
-              // 2026-07-30, after these; these stay absolute regardless,
-              // because a derived field is a second place for the rule to
-              // be wrong. `roleSleepDist` is the EFFECTIVE value and reads 0
-              // when the rule is configured off, so it can never claim a
-              // distance the bots did not get.
-              .Append(",\"roleSleepDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.Effective))
-              .Append(",\"roleWakeDist\":").Append(Fmt(Framesaver.Patches.RoleSleepDistance.EffectiveWake))
-              .Append(",\"bossGroupWake\":").Append(Bool(Plugin.KeepBossGroupsAwake.Value))
-              // Four that were in the header `config` block and not here, which
-              // is the same as not being here: the header is written once per
-              // session, and all four are live-editable.
-              //
-              // `forceAllRoles` is the live instance rather than a theoretical
-              // one. It decides which ROLES may stand by at all
-              // (BotStandByInitPointsPatch:40), so it moves bots between the
-              // awake and paused populations wholesale - raid 1.5 slept 26 of
-              // 27 under it. A third of Lighthouse's pooled frames come from
-              // that leg, and nothing on a sample line said so, so a per-map
-              // figure reads as a baseline while being part treatment arm.
-              //
-              // The comment above says an option that changes behaviour
-              // belongs here or a run cannot be told apart from the one
-              // before it. This was the largest such option and it was
-              // missing.
-              //
-              // checkInterval sets the pump rate (BotStandByUpdatePatch:107)
-              // and the sniper-exemption rebuild; sleepImmediately picks the
-              // sleep path; minBrainsPerFrame clamps the AI slice and has
-              // already fooled us once by being asked for and not applied.
-              .Append(",\"forceAllRoles\":").Append(Bool(Plugin.ForceStandByForAllRoles.Value))
-              .Append(",\"checkInterval\":").Append(Fmt(Plugin.CheckInterval.Value))
-              .Append(",\"sleepImmediately\":").Append(Bool(Plugin.SleepImmediately.Value))
-              .Append(",\"minBrainsPerFrame\":").Append(Plugin.MinBrainsPerFrame.Value);
-            GcControl.AppendCfg(sb);
-            sb.Append('}');
+            // Capstone finding (2026-08-17/18): the entire `cfg` block (~25 Plugin.X shipping
+            // config reads plus GcControl.AppendCfg) moved into Framesaver's registered window
+            // callback alongside the fields removed above - same reasoning, nested under
+            // "framesaver.ai.perf":{...} by InvokeWindowCallbacks(sb) just below.
 
             TelemetryBus.InvokeWindowCallbacks(sb);
 
@@ -2070,7 +1909,10 @@ namespace Framesaver
             AppendPlatform(sb);
             AppendDisplay(sb);
             AppendSystem(sb);
-            AppendRoleSleep(sb);
+            // Capstone finding (2026-08-17/18): roleSleep.roles reads
+            // RoleSleepDistance.RoleNames(), a shipping class staying in Framesaver -
+            // moved into Framesaver's registered header callback (nested under
+            // "framesaver.ai.perf":{...} by InvokeHeaderCallbacks below).
             sb.Append(",\"tag\":\"").Append(Escape(Plugin.RunTag.Value)).Append('"');
             sb.Append(",\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value));
             // Ticks per second for the `qpc` field on every line below. Needed to convert those stamps into
@@ -2299,7 +2141,12 @@ namespace Framesaver
             BotBackup.ResetWindow();
             BundleLoad.ResetWindow();
             SpawnAttempts.ResetWindow();
-            AsyncDrain.ResetWindow();
+            // Capstone finding: AsyncDrain.ResetWindow() call removed - needs its own
+            // resolution in the Plugin.cs wiring pass (Framesaver's window-callback
+            // registration must also reset AsyncDrain's per-window Top-N state, since
+            // Ranger's ResetWindow() drives window boundaries but cannot call a
+            // Framesaver-only class directly). NOT YET RESOLVED - flagged rather than
+            // guessed; do not assume this window-reset happens until Plugin.cs is wired.
             RaidInit.ResetWindow();
             UpdateManualTiming.ResetWindow();
             StandByTransitions.ResetWindow();
@@ -2319,8 +2166,6 @@ namespace Framesaver
             _heapMb.Reset();
             _gameUpdateSamples.Clear();
             _frameSamples.Clear();
-            _tickedSum = 0L;
-            _liveSum = 0L;
             _allocatedBytes = 0d;
             _gen0Base = _gen0;
             _windowStart = Time.realtimeSinceStartup;
@@ -2440,44 +2285,6 @@ namespace Framesaver
               .Append(",\"ramMb\":").Append(SystemInfo.systemMemorySize)
               .Append(",\"os\":\"").Append(Escape(SystemInfo.operatingSystem ?? ""))
               .Append("\"}");
-        }
-
-        /// <summary>
-        /// Which roles the posted-role distance covers.
-        ///
-        /// The distances themselves are in `cfg` on every window, because they
-        /// are live-editable; this list cannot change at runtime, so it is
-        /// written once here instead of thirteen strings per window. Without
-        /// it a log cannot say what table it ran under and we would be
-        /// inferring configuration from behaviour a week later - the same
-        /// reason `expandedPhases` is in the header rather than reconstructed
-        /// from which children appeared.
-        ///
-        /// Emitted whatever `cfg.roleSleepDist` says, so a run with the rule
-        /// switched off still records the table it would have used.
-        /// </summary>
-        private static void AppendRoleSleep(StringBuilder sb)
-        {
-            sb.Append(",\"roleSleep\":{\"roles\":[");
-            List<string> roles = Framesaver.Patches.RoleSleepDistance.RoleNames();
-            for (int i = 0; i < roles.Count; i++)
-            {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append('"').Append(Escape(roles[i])).Append('"');
-            }
-
-            sb.Append("]}");
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. AppendRoleSleep
-            // runs once per session (WriteHeader's only caller), matching the cadence
-            // PublishTelemetry() is designed for - see its doc comment in RoleSleepDistance.cs for
-            // why this is not folded into the Effective/EffectiveWake getters themselves. Does not
-            // change the NDJSON this method emits above.
-            Framesaver.Patches.RoleSleepDistance.PublishTelemetry();
         }
 
         /// <summary>

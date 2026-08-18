@@ -51,6 +51,10 @@
       <HintPath>$(BepInExDir)\plugins\spt\spt-reflection.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="spt-common">
       <HintPath>$(BepInExDir)\plugins\spt\spt-common.dll</HintPath>
       <Private>false</Private>
