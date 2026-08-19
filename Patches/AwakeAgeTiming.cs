@@ -41,7 +41,7 @@ namespace Ranger
     /// the raid ending. That is the quantity under test, not an accounting
     /// period.
     /// </summary>
-    internal static class AwakeAge
+    public static class AwakeAge
     {
         /// <summary>
         /// Upper edges in seconds; the last bucket is everything above the
@@ -86,12 +86,12 @@ namespace Ranger
         /// active -> goToSave -> active are all un-paused, and assigning would
         /// reset the age of a bot that never slept. Only Ended closes a span.
         /// </summary>
-        internal static void Woke(BotOwner bot)
+        public static void Woke(BotOwner bot)
         {
             WokeAt(bot, Time.realtimeSinceStartup);
         }
 
-        internal static void Ended(BotOwner bot)
+        public static void Ended(BotOwner bot)
         {
             // ReferenceEquals, not `== null`. BotOwner is a MonoBehaviour, so
             // `== null` is Unity's overload and answers TRUE for a destroyed
@@ -129,8 +129,13 @@ namespace Ranger
         /// dropped - it spawned awake, or it was already awake when we first
         /// looked. That undercounts its true age rather than misattributing
         /// it, which is the same trade CountBots makes with a null StandBy.
+        ///
+        /// PUBLIC (capstone cutover, 2026-08-19): UpdateManualTimingPatches.cs stays in
+        /// Framesaver (it is the shipping-adjacent per-bot timing instrument, not moved with
+        /// this file), so its call site needs cross-assembly access - same reasoning as
+        /// Woke/Ended above.
         /// </summary>
-        internal static void Record(BotOwner bot, long ticks)
+        public static void Record(BotOwner bot, long ticks)
         {
             RecordAt(bot, ticks, Time.realtimeSinceStartup);
         }

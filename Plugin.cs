@@ -2,6 +2,7 @@ using System;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using Ranger.Patches;
 
 namespace Ranger
 {
@@ -77,6 +78,7 @@ namespace Ranger
         public static ConfigEntry<float> TelemetryWindow;
         public static ConfigEntry<float> SpikeEventMs;
         public static ConfigEntry<string> ExpandPhase;
+        public static ConfigEntry<bool> ProfilePlayerLoop;
 
         // AsyncDrain diagnostics (worstCallbacks): read by AsyncDrainPatch's diagnostics half,
         // which is still in Framesaver until the class-split's cutover half. Declared here NOW
@@ -142,6 +144,21 @@ namespace Ranger
                 "the default - expands every phase. This is a blocklist. Read only inside Install(), " +
                 "so a change takes effect on the NEXT raid load.");
 
+            // Capstone cutover (2026-08-19): moved from Framesaver's Plugin.cs, together with
+            // Telemetry.cs and PlayerLoopProfiler.cs themselves (the seam-5 lesson - these three
+            // cannot change owners independently). Same key name and default Framesaver's copy
+            // used, so an existing BepInEx config file's saved value is NOT silently orphaned by
+            // this move (Ranger's config section is "Telemetry", matching every other telemetry
+            // key already here, not Framesaver's old "3. Telemetry" - a fresh key under a fresh
+            // section, per Sophia's 2026-08-16 23:03Z ruling that Ranger's config is a fresh
+            // start, not a migration).
+            ProfilePlayerLoop = Config.Bind(
+                "Telemetry", "Profile player loop", true,
+                "Inject timing markers around every top-level Unity player-loop phase (Initialization, " +
+                "EarlyUpdate, FixedUpdate, PreUpdate, Update, PreLateUpdate, PostLateUpdate). This is what " +
+                "locates work that falls outside the game's own Update/FixedUpdate/render counters. Turn off " +
+                "if you suspect the injection is causing trouble.");
+
             AsyncDrainDiagnostics = Config.Bind(
                 "Experimental", "Async drain diagnostics", true,
                 "Time each individual completion callback and report the slowest one per window, " +
@@ -174,18 +191,41 @@ namespace Ranger
             new GameWorldPlayerTickPatch().Enable();
             new JobSchedulerLateUpdatePatch().Enable();
             new AmbientLightLateUpdatePatch().Enable();
-            // (PlayerLoopProfiler install/arm REVERTED 2026-08-17 seam-5 follow-up: the profiler
-            // and the sampler that reads its Snapshot are statically coupled within one assembly,
-            // and the sampler is still Framesaver-side until capstone. Moving only the install
-            // here inverted ownership at every raid-load rewrite - Framesaver's 5s re-arm re-owned
-            // the loop because its sampler reads its own copy. Ranger takes the profiler at
-            // capstone, TOGETHER with Telemetry.cs. The ProfilePlayerLoop bind goes with it.)
-            // NOTE: the Telemetry sampler component itself is NOT added here yet. Telemetry.cs
-            // still lives in Framesaver and still owns the ndjson until the capstone commit;
-            // adding a second sampler now would double-write the file. Framesaver's Awake
-            // keeps its AddComponent<Telemetry> for exactly that reason. See the class doc.
 
-            LogSource.LogInfo("Ranger: telemetry lifecycle OWNER as of seam-5. Sampler core still Framesaver-side until capstone.");
+            // ---- Capstone cutover (2026-08-19): the sampler core itself, and everything the
+            // seam-5 comment above said was staying in Framesaver "until capstone". This IS that
+            // commit. Four patch classes moved here WITH the static classes they instrument
+            // (BotBackup, BotLog) per EXTRACTION-PLAN.md's "whole file, patches included" call -
+            // Framesaver's Plugin.cs no longer enables any of these four.
+            new BotBackupAddPatch().Enable();
+            new BotBackupFlushPatch().Enable();
+            new BotSpawnLogPatch().Enable();
+            new BotActivationCanaryPatch().Enable();
+
+            // Death-event subscription moves with BotLog - see BotLog.Subscribe's own doc
+            // comment for why the guard against a double subscription matters here specifically.
+            BotLog.Subscribe();
+
+            // PlayerLoopProfiler install/arm, RESTORED here (reverses the seam-5 partial revert
+            // above) - now safe because the sampler that reads PlayerLoopProfiler.Snapshot
+            // (Telemetry, added below) lives in THIS SAME ASSEMBLY as of this commit. The seam-5
+            // defect (ownership inverting in-raid between two assemblies each re-arming their own
+            // copy) cannot recur once there is only one copy.
+            if (ProfilePlayerLoop.Value)
+            {
+                PlayerLoopProfiler.Install();
+                PlayerLoopProfiler.ArmFrameGap();
+            }
+
+            // The sampler component itself. Framesaver's Plugin.cs no longer adds this - see
+            // that file's own Awake for the deletion. This is the moment Ranger starts writing
+            // the ndjson instead of Framesaver.
+            if (TelemetryEnabled.Value)
+            {
+                gameObject.AddComponent<Telemetry>();
+            }
+
+            LogSource.LogInfo("Ranger: telemetry lifecycle AND sampler core owner as of the capstone cutover. Framesaver no longer writes ndjson.");
         }
 
         private static void TryEnable(SPT.Reflection.Patching.ModulePatch patch, string name)

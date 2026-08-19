@@ -129,7 +129,7 @@ namespace Ranger.Patches
         /// `forceAllRoles` a bot reads false on the property while holding a
         /// true grant, and that disagreement IS the measurement.
         /// </summary>
-        internal static void StandByAssigned(BotStandBy standBy, BotOwner bot)
+        public static void StandByAssigned(BotStandBy standBy, BotOwner bot)
         {
             if (standBy == null || bot == null)
             {
