@@ -94,12 +94,46 @@
   </ItemGroup>
 
   <!--
-    Deploy gate intentionally NOT copied verbatim from Framesaver yet. Framesaver's
-    RefuseDirtyDeploy target is a hard-won control (see its own comments) but this
-    skeleton has no source history of its own to stamp against - copying the gate
-    before there is anything real to gate would just be ceremony. Add it back once
-    the extraction lands real code and a first tagged build exists to protect.
+    RefuseDirtyDeploy, ported from Framesaver 2026-08-19 now that the extraction has
+    landed real code and a first tagged build (the capstone cutover, b8a2a19/96e3871,
+    raid-verified) exists to protect. Same reasoning as Framesaver's own copy of this
+    target - see its comments there for the full argument - reproduced here rather
+    than shared, because MSBuild targets do not import across independent projects
+    without their own machinery, and this mod needs to be maintainable on its own
+    without a live reference to Framesaver's tree.
+
+    Scope differs from Framesaver's by file layout only: Ranger's own top-level .cs
+    files (Plugin.cs, Telemetry.cs, TelemetryBus.cs, ProtocolRunner.cs,
+    PlayerLoopProfiler.cs, GpuTelemetry.cs) plus Patches/*.cs plus Ranger.csproj
+    itself - the equivalent of Framesaver's "*.cs Patches/*.cs Framesaver.csproj"
+    pathspec, just naming this repo's own root instead.
   -->
+  <Target Name="RefuseDirtyDeploy" BeforeTargets="PostBuild" Condition="'$(Deploy)' == 'true'"
+          DependsOnTargets="InitializeSourceControlInformation">
+    <Exec Command="git status --porcelain -- *.cs Patches/*.cs Ranger.csproj"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          ConsoleToMSBuild="true" StandardOutputImportance="low"
+          ContinueOnError="true" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="RangerDirty" />
+      <Output TaskParameter="ExitCode" PropertyName="RangerGitExit" />
+    </Exec>
+
+    <Error Condition="'$(RangerGitExit)' != '0' And '$(AllowUnverifiedDeploy)' != 'true'"
+           Text="Ranger: refusing to deploy. git could not run, so the clean-tree check was SKIPPED, not passed - and SourceLink reads .git directly, so this binary still carries a plausible-looking stamp that nothing has checked against its source. Re-run with -p:AllowUnverifiedDeploy=true if you accept that." />
+
+    <Warning Condition="'$(AllowUnverifiedDeploy)' == 'true' And '$(RangerGitExit)' != '0'"
+             Text="Ranger: AllowUnverifiedDeploy is set and git could not run, so the clean-tree check did not run. This binary's stamp may not describe its source." />
+
+    <Error Condition="'$(SourceRevisionId)' == '' And '$(AllowUnverifiedDeploy)' != 'true'"
+           Text="Ranger: refusing to deploy. This assembly carries NO commit stamp, so every telemetry log it writes will read commit:&quot;&quot; and can never be tied back to a build. Build from a git checkout, or re-run with -p:AllowUnverifiedDeploy=true if you accept anonymous logs." />
+
+    <Warning Condition="'$(AllowUnverifiedDeploy)' == 'true' And '$(SourceRevisionId)' == ''"
+             Text="Ranger: AllowUnverifiedDeploy is set and there is no commit stamp. Logs from this binary will read commit:&quot;&quot; and cannot be attributed to a build." />
+
+    <Error Condition="'$(RangerGitExit)' == '0' And '$(RangerDirty)' != ''"
+           Text="Ranger: refusing to deploy. Compiled sources differ from HEAD, so the build stamp would name a commit this binary was not built from:%0A$(RangerDirty)%0ACommit first, then rebuild - the stamp is read from git HEAD at build time." />
+  </Target>
+
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
     <Copy Condition="'$(Deploy)' == 'true'"
           SourceFiles="$(TargetPath)" DestinationFolder="$(BepInExDir)\plugins\" />

@@ -1,0 +1,19 @@
+{
+  "publicProse": [
+    "README.md",
+    "LICENSE"
+  ],
+  "internalExempt": [
+    "harness/*",
+    "artifacts/*",
+    "docs/*"
+  ],
+  "configDescriptionsReviewedAt": "<sha, or null>",
+  "codeReviewedAt": {
+    "Plugin.cs": "<sha>",
+    "Patches/…": "<sha>"
+  },
+  "canUpdateUnaided": {
+    "note": "subsystem -> a human-only commit sha touching it"
+  }
+}
