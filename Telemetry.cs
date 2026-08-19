@@ -1125,12 +1125,16 @@ namespace Ranger
         /// </summary>
         private void EmitSpikeEvent(double periodMs, double frameMs)
         {
-            StringBuilder sb = new StringBuilder(384);
+            // JObject conversion (2026-08-19, Tau's slice - see WriteMark/WriteHeader's own comments
+            // for the shared reasoning). InvokeSpikeCallbacks stays StringBuilder-shaped this pass, same
+            // capture-and-splice pattern used throughout.
+            JObject obj = new JObject();
             // Collections that happened during this frame specifically. Per-window gen0 cannot resolve a
             // single 330ms frame, and the recurring early-raid spikes that land entirely in `unaccounted`
             // have exactly the shape of a stop-the-world pause: no measured phase accounts for them, and
             // they are suspiciously uniform in size. If gen0 is non-zero on those lines, that is the answer.
-            sb.Append("{\"type\":\"spike\",\"window\":").Append(_window);
+            obj["type"] = "spike";
+            obj["window"] = _window;
             // True QueryPerformanceCounter via GpuTelemetry.Qpc(), NOT Stopwatch.GetTimestamp().
             // Under Mono the Stopwatch epoch is process-relative while reporting a 10 MHz
             // frequency, so durations are correct but timestamps will not join against an
@@ -1139,25 +1143,24 @@ namespace Ranger
             // [CPUStartQPC, CPUStartQPC + FrameTime), not by nearest start. Nearest-start
             // lands on the neighbouring ordinary frame on exactly the stall frames that
             // matter, which reads as "the GPU was fine through the stall".
-            sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
-            sb.Append(",\"gcGen0\":").Append(_gcThisFrame);
-            Num(sb, "t", Time.realtimeSinceStartup - _sampleStart);
-            sb.Append(",\"state\":\"").Append(_state.ToString().ToLowerInvariant()).Append('"');
-            AppendRaidIdentity(sb);
-            AppendRaidClock(sb);
-            Num(sb, "period", periodMs);
-            Num(sb, "frame", frameMs);
+            obj["qpc"] = GpuTelemetry.Qpc();
+            obj["gcGen0"] = _gcThisFrame;
+            obj["t"] = FmtToken(Time.realtimeSinceStartup - _sampleStart);
+            obj["state"] = _state.ToString().ToLowerInvariant();
+            AppendRaidIdentityObj(obj);
+            AppendRaidClockObj(obj);
+            obj["period"] = FmtToken(periodMs);
+            obj["frame"] = FmtToken(frameMs);
 
             // Where this frame happened. A spike that only occurs in one part of a map is a different
             // finding from one that happens anywhere, and nothing has been able to tell them apart.
             if (_hasPos)
             {
-                sb.Append(",\"at\":[").Append(Fmt(_lastPos.x)).Append(',').Append(Fmt(_lastPos.y))
-                  .Append(',').Append(Fmt(_lastPos.z)).Append(']');
+                obj["at"] = new JArray(FmtToken(_lastPos.x), FmtToken(_lastPos.y), FmtToken(_lastPos.z));
             }
             else
             {
-                sb.Append(",\"at\":null");
+                obj["at"] = null;
             }
 
             // Wall time from PostLateUpdate's last subsystem to EarlyUpdate's first - i.e. outside
@@ -1173,11 +1176,11 @@ namespace Ranger
             // large gap this field exists to detect, so an unsure instrument must stay silent.
             if (PlayerLoopProfiler.FrameGapArmed && PlayerLoopProfiler.GapValid)
             {
-                Num(sb, "endToStart", PlayerLoopProfiler.EndToStartMs);
+                obj["endToStart"] = FmtToken(PlayerLoopProfiler.EndToStartMs);
             }
             else
             {
-                sb.Append(",\"endToStart\":null");
+                obj["endToStart"] = null;
             }
 
             // endToLatch closes the same gap at the frame boundary, so it pairs with `period` and
@@ -1191,11 +1194,11 @@ namespace Ranger
             // Drop endToStart once endToLatch is validated against it.
             if (PlayerLoopProfiler.FrameGapArmed && PlayerLoopProfiler.LatchGapValid)
             {
-                Num(sb, "endToLatch", PlayerLoopProfiler.EndToLatchMs);
+                obj["endToLatch"] = FmtToken(PlayerLoopProfiler.EndToLatchMs);
             }
             else
             {
-                sb.Append(",\"endToLatch\":null");
+                obj["endToLatch"] = null;
             }
 
             double accounted = 0d;
@@ -1203,8 +1206,7 @@ namespace Ranger
             {
                 string[] names = PlayerLoopProfiler.PhaseNames;
                 double[] phase = PlayerLoopProfiler.Snapshot;
-                sb.Append(",\"phases\":{");
-                bool first = true;
+                JObject phases = new JObject();
                 for (int i = 0; i < phase.Length && i < names.Length; i++)
                 {
                     // Only top-level phases count toward the total; children would double-count their parent.
@@ -1219,24 +1221,18 @@ namespace Ranger
                         continue;
                     }
 
-                    if (!first)
-                    {
-                        sb.Append(',');
-                    }
-
-                    first = false;
-                    sb.Append('"').Append(Escape(names[i])).Append("\":").Append(Fmt(phase[i]));
+                    phases[names[i]] = FmtToken(phase[i]);
                 }
 
-                sb.Append('}');
+                obj["phases"] = phases;
             }
 
             // The residual is the whole point: time inside no player-loop phase at all is a different class of
             // problem from time inside one, and only a per-frame line can show it.
-            Num(sb, "unaccounted", periodMs - accounted);
-            Num(sb, "asyncFixed", _lastAsyncFixed);
-            Num(sb, "asyncUpdate", _lastAsyncUpdate);
-            sb.Append(",\"drained\":").Append(_lastDrained);
+            obj["unaccounted"] = FmtToken(periodMs - accounted);
+            obj["asyncFixed"] = FmtToken(_lastAsyncFixed);
+            obj["asyncUpdate"] = FmtToken(_lastAsyncUpdate);
+            obj["drained"] = _lastDrained;
 
             // gcPhase and heapDeltaMb are both gated on a collection having completed this
             // frame, so heapDeltaMb reports how much was reclaimed and nothing more. It
@@ -1252,19 +1248,21 @@ namespace Ranger
                 string gcPhase = PlayerLoopProfiler.GcPhase();
                 if (gcPhase.Length > 0)
                 {
-                    sb.Append(",\"gcPhase\":\"").Append(Escape(gcPhase)).Append('"');
+                    obj["gcPhase"] = gcPhase;
                 }
 
-                Num(sb, "heapDeltaMb", _lastHeapDeltaMb);
+                obj["heapDeltaMb"] = FmtToken(_lastHeapDeltaMb);
                 // Capstone finding: GcControl.AppendSpike read a Framesaver-only shipping
                 // class directly - routed through TelemetryBus.InvokeSpikeCallbacks, same
-                // registered-callback mechanism as header/window/mark.
-                TelemetryBus.InvokeSpikeCallbacks(sb);
+                // registered-callback mechanism as header/window/mark. Stays StringBuilder-shaped
+                // this pass, captured and spliced same as everywhere else in this file.
+                StringBuilder spikeCallbackSb = new StringBuilder(256);
+                TelemetryBus.InvokeSpikeCallbacks(spikeCallbackSb);
+                SpliceRawFields(obj, spikeCallbackSb.ToString());
             }
             // (gpuMs/presentWaitMs/vram spike fields used to append here; archived with the
             // GPU instruments 2026-08-17.)
-            sb.Append('}');
-            Append(sb.ToString());
+            Append(obj.ToString(Formatting.None));
         }
 
         private static void AppendPercentiles(StringBuilder sb, string name, List<double> samples)
@@ -1890,22 +1888,29 @@ namespace Ranger
         /// </summary>
         private void WriteMark(SessionState state)
         {
-            StringBuilder sb = new StringBuilder(4096);
-            sb.Append("{\"type\":\"mark\"");
-            sb.Append(",\"mark\":").Append(++_markOrdinal);
-            sb.Append(",\"window\":").Append(_window);
-            sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
-            Num(sb, "t", Time.realtimeSinceStartup - _sampleStart);
+            // JObject conversion (2026-08-19, Tau's slice of the same pass as Flush() above -
+            // see that method's own doc comment for the full reasoning). InvokeMarkCallbacks stays
+            // StringBuilder-shaped this pass (Echo's bounded-scope decision, unstarted follow-on to
+            // convert it fully) so its fragment is captured into a small StringBuilder and merged in
+            // via SpliceRawFields, same pattern Flush() already established for InvokeWindowCallbacks.
+            JObject obj = new JObject();
+            obj["type"] = "mark";
+            obj["mark"] = ++_markOrdinal;
+            obj["window"] = _window;
+            obj["qpc"] = GpuTelemetry.Qpc();
+            obj["t"] = FmtToken(Time.realtimeSinceStartup - _sampleStart);
 
             // The state passed in, not `_state`: at the menu the latched field holds whatever the last
             // sampled regime was, so a mark on the intermission screen would claim to be in a raid.
-            sb.Append(",\"state\":\"").Append(state.ToString().ToLowerInvariant()).Append('"');
-            AppendRaidIdentity(sb);
-            AppendRaidClock(sb);
-            AppendPosition(sb);
+            obj["state"] = state.ToString().ToLowerInvariant();
+            AppendRaidIdentityObj(obj);
+            AppendRaidClockObj(obj);
+            AppendPositionObj(obj);
 
             // Walk backwards from the newest frame, newest first, until the durations sum past the
-            // lookback or the ring runs out.
+            // lookback or the ring runs out. Still built as a raw JSON array string (frameMs is a big
+            // flat numeric array, not a JObject-shaped fragment - JArray of FmtToken would allocate a
+            // JValue per frame for no benefit here) and spliced in as JRaw.
             double span = 0d;
             int taken = 0;
             StringBuilder frames = new StringBuilder(3072);
@@ -1922,39 +1927,59 @@ namespace Ranger
                 taken++;
             }
 
-            sb.Append(",\"frames\":").Append(taken);
-            Num(sb, "spanMs", span);
-            sb.Append(",\"frameMs\":[").Append(frames).Append(']');
-            TelemetryBus.InvokeMarkCallbacks(sb);
-            sb.Append('}');
-            Append(sb.ToString());
+            obj["frames"] = taken;
+            obj["spanMs"] = FmtToken(span);
+            obj["frameMs"] = new JRaw("[" + frames + "]");
+
+            StringBuilder markCallbackSb = new StringBuilder(256);
+            TelemetryBus.InvokeMarkCallbacks(markCallbackSb);
+            SpliceRawFields(obj, markCallbackSb.ToString());
+
+            Append(obj.ToString(Formatting.None));
             Plugin.LogSource.LogInfo("Ranger mark: " + taken + " frames, " + Fmt(span) + " ms");
         }
 
 
         private void WriteHeader()
         {
-            StringBuilder sb = new StringBuilder(512);
-            sb.Append("{\"type\":\"header\"");
+            // JObject conversion (2026-08-19, Tau's slice - see WriteMark's own comment for the full
+            // reasoning shared by all three methods in this slice). gcRuntime and expandedPhases are
+            // built as nested JObject/JArray directly since they are wholly local to this method (no
+            // shared StringBuilder helper computes them) - GpuTelemetry.AppendHeader and
+            // InvokeHeaderCallbacks stay StringBuilder-shaped this pass and are captured + spliced via
+            // SpliceRawFields, same pattern as Flush()'s InvokeWindowCallbacks and WriteMark's
+            // InvokeMarkCallbacks.
+            JObject obj = new JObject();
+            obj["type"] = "header";
             // Both derived from the assembly, never written down here. `commit` is separate from
             // `version` rather than the SDK's "0.1.0+<sha>" blob so a reader never has to split it,
             // and so an unstamped build reads as commit:"" instead of a version that looks whole.
-            sb.Append(",\"version\":\"").Append(Escape(Plugin.BuildVersion)).Append('"');
-            sb.Append(",\"commit\":\"").Append(Escape(Plugin.BuildCommit)).Append('"');
-            sb.Append(",\"started\":\"").Append(DateTime.Now.ToString("o", CultureInfo.InvariantCulture)).Append('"');
-            AppendPlatform(sb);
-            AppendDisplay(sb);
-            AppendSystem(sb);
+            obj["version"] = Plugin.BuildVersion ?? "";
+            obj["commit"] = Plugin.BuildCommit ?? "";
+            obj["started"] = DateTime.Now.ToString("o", CultureInfo.InvariantCulture);
+
+            StringBuilder platformSb = new StringBuilder(256);
+            AppendPlatform(platformSb);
+            SpliceRawFields(obj, platformSb.ToString());
+
+            StringBuilder displaySb = new StringBuilder(256);
+            AppendDisplay(displaySb);
+            SpliceRawFields(obj, displaySb.ToString());
+
+            StringBuilder systemSb = new StringBuilder(256);
+            AppendSystem(systemSb);
+            SpliceRawFields(obj, systemSb.ToString());
+
             // Capstone finding (2026-08-17/18): roleSleep.roles reads
             // RoleSleepDistance.RoleNames(), a shipping class staying in Framesaver -
             // moved into Framesaver's registered header callback (nested under
             // "framesaver.ai.perf":{...} by InvokeHeaderCallbacks below).
-            sb.Append(",\"tag\":\"").Append(Escape(Plugin.RunTag.Value)).Append('"');
-            sb.Append(",\"windowSeconds\":").Append(Fmt(Plugin.TelemetryWindow.Value));
+            obj["tag"] = Plugin.RunTag.Value ?? "";
+            obj["windowSeconds"] = FmtToken(Plugin.TelemetryWindow.Value);
             // Ticks per second for the `qpc` field on every line below. Needed to convert those stamps into
             // the seconds an external capture reports.
-            sb.Append(",\"qpcFrequency\":").Append(GpuTelemetry.QpcFrequency());
-            Num(sb, "spikeEventMs", Plugin.SpikeEventMs.Value);
+            obj["qpcFrequency"] = GpuTelemetry.QpcFrequency();
+            obj["spikeEventMs"] = FmtToken(Plugin.SpikeEventMs.Value);
 
             // Capstone finding: deferToAiMods read Framesaver's Plugin.DeferToOtherAiMods
             // directly - this field, along with the entire "config" block below, moved into
@@ -1967,19 +1992,14 @@ namespace Ranger
             // phase and a phase whose children all fall under the 0.5 ms drop threshold produce identical
             // output. Under the old allowlist the setting could be recovered from a log by seeing which
             // children appeared - that inference is gone, so the resolved set has to be stated.
-            sb.Append(",\"expandedPhases\":[");
+            JArray expandedArr = new JArray();
             string[] expanded = PlayerLoopProfiler.ExpandedPhases;
             for (int i = 0; i < expanded.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append('"').Append(Escape(expanded[i])).Append('"');
+                expandedArr.Add(expanded[i]);
             }
 
-            sb.Append(']');
+            obj["expandedPhases"] = expandedArr;
 
             // Whether Unity's incremental collector is available decides the shape of any GC fix. The PMC
             // bot-generation callback ran 21 stop-the-world collections in 16.4s; if the collector is
@@ -1987,25 +2007,30 @@ namespace Ranger
             // requirement (loading may take as long as it likes, it may not freeze). If it is not
             // incremental - a build-time player setting we cannot flip at runtime - the only lever left is
             // driving CollectIncremental() by hand, which needs isIncremental true anyway. Read once here.
-            sb.Append(",\"gcRuntime\":{");
+            JObject gcRuntime = new JObject();
             try
             {
-                sb.Append("\"isIncremental\":").Append(Bool(GarbageCollector.isIncremental))
-                  .Append(",\"mode\":\"").Append(GarbageCollector.GCMode.ToString()).Append('"')
-                  .Append(",\"timeSliceNs\":").Append(GarbageCollector.incrementalTimeSliceNanoseconds);
+                gcRuntime["isIncremental"] = GarbageCollector.isIncremental;
+                gcRuntime["mode"] = GarbageCollector.GCMode.ToString();
+                gcRuntime["timeSliceNs"] = GarbageCollector.incrementalTimeSliceNanoseconds;
             }
             catch (Exception e)
             {
-                sb.Append("\"error\":\"").Append(Escape(e.GetType().Name)).Append('"');
+                gcRuntime = new JObject();
+                gcRuntime["error"] = e.GetType().Name;
             }
 
-            sb.Append('}');
+            obj["gcRuntime"] = gcRuntime;
 
-            GpuTelemetry.AppendHeader(sb);
-            TelemetryBus.InvokeHeaderCallbacks(sb);
+            StringBuilder gpuHeaderSb = new StringBuilder(256);
+            GpuTelemetry.AppendHeader(gpuHeaderSb);
+            SpliceRawFields(obj, gpuHeaderSb.ToString());
 
-            sb.Append('}');
-            Append(sb.ToString());
+            StringBuilder headerCallbackSb = new StringBuilder(256);
+            TelemetryBus.InvokeHeaderCallbacks(headerCallbackSb);
+            SpliceRawFields(obj, headerCallbackSb.ToString());
+
+            Append(obj.ToString(Formatting.None));
         }
 
         /// <summary>
