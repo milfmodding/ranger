@@ -9,6 +9,8 @@ using System.Threading;
 using Comfort.Common;
 using Diz.Jobs;
 using EFT;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Ranger.Patches;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -1328,20 +1330,35 @@ namespace Ranger
             int standByRefused = 0;
             CountBots(ref awake, ref asleep, ref exempt, ref roleUnknown, ref standByRefused);
 
-            StringBuilder sb = new StringBuilder(512);
-            sb.Append("{\"type\":\"sample\"");
-            sb.Append(",\"window\":").Append(_window);
-            sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
-            Num(sb, "t", Time.realtimeSinceStartup - _sampleStart);
-            sb.Append(",\"state\":\"").Append(_state.ToString().ToLowerInvariant()).Append('"');
-            AppendRaidIdentity(sb);
-            AppendRaidClock(sb);
-            sb.Append(",\"final\":").Append(final ? "true" : "false");
-            sb.Append(",\"frames\":").Append(_periodSamples);
-            sb.Append(",\"n\":").Append(_frame.Count);
+            // JObject conversion (2026-08-19): this method used to build its NDJSON line with a
+            // StringBuilder, appending one `,"key":value` fragment at a time. That shape is exactly
+            // what let the "bots" block go missing after the capstone move - CountBots() above still
+            // computed every value every window, and nothing failed loudly when the corresponding
+            // sb.Append(...) call was simply absent. A JObject assignment (obj["bots"] = ...) is no
+            // safer against being FORGOTTEN, but it makes the resulting shape trivially inspectable
+            // (obj.Properties()) and removes an entire class of hand-matched-quote/brace bugs the old
+            // StringBuilder path was exposed to. See Sophia's ruling, room 2026-08-19 17:02Z.
+            //
+            // Several sub-modules (UpdateManualTiming, StandByTransitions, AwakeAge, RaidInit,
+            // BossSpawnGate, GpuTelemetry) still build their OWN fragments as raw JSON text via
+            // StringBuilder - that is unchanged in this pass, deliberately scoped down (see the room
+            // post explaining the bounded-first-pass decision). Their text is embedded verbatim via
+            // JRaw, which Newtonsoft serializes byte-for-byte without re-parsing it - so the output
+            // shape for those fields is unchanged even though this method itself now builds a JObject.
+            JObject obj = new JObject();
+            obj["type"] = "sample";
+            obj["window"] = _window;
+            obj["qpc"] = GpuTelemetry.Qpc();
+            obj["t"] = FmtToken(Time.realtimeSinceStartup - _sampleStart);
+            obj["state"] = _state.ToString().ToLowerInvariant();
+            AppendRaidIdentityObj(obj);
+            AppendRaidClockObj(obj);
+            obj["final"] = final;
+            obj["frames"] = _periodSamples;
+            obj["n"] = _frame.Count;
 
-            AppendPosition(sb);
-            AppendProc(sb);
+            AppendPositionObj(obj);
+            AppendProcObj(obj);
 
             // CAPSTONE BUG FOUND AND FIXED (2026-08-19, editing pass): this whole "bots"
             // block existed pre-cutover (awake/asleep/total/exempt/standByRefused/
@@ -1355,13 +1372,16 @@ namespace Ranger
             // "emits X" assertion against the actual IL rather than trusting the prior
             // migration's claim that this data "stays flat, unchanged" (FIELD-MAPPING.md
             // was wrong about this one - corrected in the same commit as this fix).
-            // Restored verbatim from the pre-cutover source (Framesaver 3ad1b55).
-            sb.Append(",\"bots\":{\"awake\":").Append(awake)
-              .Append(",\"asleep\":").Append(asleep)
-              .Append(",\"total\":").Append(awake + asleep)
-              .Append(",\"exempt\":").Append(exempt)
-              .Append(",\"standByRefused\":").Append(standByRefused)
-              .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
+            // Restored verbatim from the pre-cutover source (Framesaver 3ad1b55), now as
+            // a JObject assignment rather than a StringBuilder fragment.
+            JObject bots = new JObject();
+            bots["awake"] = awake;
+            bots["asleep"] = asleep;
+            bots["total"] = awake + asleep;
+            bots["exempt"] = exempt;
+            bots["standByRefused"] = standByRefused;
+            bots["roleUnknown"] = roleUnknown;
+            obj["bots"] = bots;
 
             // Ranger extraction, additive: publish the same five counts to the bus so
             // other consumers can read them without re-deriving. This used to be a
@@ -1377,50 +1397,56 @@ namespace Ranger
             TelemetryBus.Event("botStandBy.roleUnknown", roleUnknown);
             TelemetryBus.Event("botStandBy.standByRefused", standByRefused);
 
-            Block(sb, "frame", _frame);
-            Block(sb, "gameUpdate", _gameUpdate);
-            Block(sb, "jobQueue", _jobQueue);
-            Block(sb, "aiTotal", _aiTotal);
+            obj["frame"] = BlockObj(_frame);
+            obj["gameUpdate"] = BlockObj(_gameUpdate);
+            obj["jobQueue"] = BlockObj(_jobQueue);
+            obj["aiTotal"] = BlockObj(_aiTotal);
 
             // Beside aiTotal, not inside it: this is BotOwner.UpdateManual, which
             // aiTotal (BotsController.method_0) does not contain. Sums over the
             // window, not a distribution - the quantity wanted is a per-call mean
             // per bucket, so the divisor has to travel with the total.
-            sb.Append(",\"updateManual\":");
-            UpdateManualTiming.Append(sb);
+            //
+            // Still StringBuilder-built (see this method's own doc comment above for why this
+            // pass leaves the sub-modules alone) - embedded verbatim via JRaw.
+            StringBuilder updateManualSb = new StringBuilder(256);
+            UpdateManualTiming.Append(updateManualSb);
+            obj["updateManual"] = new JRaw(updateManualSb.ToString());
 
             // Everything else here is per frame. A cost paid per TRANSITION is
             // invisible to all of it - smeared across whichever frames held a
             // transition, which reads as a tail rather than a level. Gross
             // counts, so `wokenMs / woken` is the cost of one wake.
-            sb.Append(",\"standByTransitions\":");
-            StandByTransitions.Append(sb);
+            StringBuilder standByTransitionsSb = new StringBuilder(256);
+            StandByTransitions.Append(standByTransitionsSb);
+            obj["standByTransitions"] = new JRaw(standByTransitionsSb.ToString());
 
             // updateManual's cost split by how long each bot has been
             // continuously awake. The buckets are the per-bot part: a window
             // with one old bot and ten young ones reports them separately,
             // which the pooled mean beside it cannot.
-            sb.Append(",\"awakeAge\":");
-            AwakeAge.Append(sb);
+            StringBuilder awakeAgeSb = new StringBuilder(256);
+            AwakeAge.Append(awakeAgeSb);
+            obj["awakeAge"] = new JRaw(awakeAgeSb.ToString());
 
             // -1 means the event's backing field could not be found, never 0.
             // Settles unbounded-but-cheap against bounded, which timing cannot.
-            sb.Append(",\"triggerSubsMax\":")
-              .Append(TriggerSubscribers.Max());
+            obj["triggerSubsMax"] = TriggerSubscribers.Max();
 
-            Block(sb, "jobSchedulerLate", _jobSched);
-            Block(sb, "ambientLight", _ambientLight);
-            Block(sb, "asyncUpdateDrain", _asyncUpdate);
-            Block(sb, "asyncFixedDrain", _asyncFixed);
-            Block(sb, "asyncDrained", _asyncDrained);
-            sb.Append(",\"asyncFixedSkips\":").Append(_asyncFixedSkips);
+            obj["jobSchedulerLate"] = BlockObj(_jobSched);
+            obj["ambientLight"] = BlockObj(_ambientLight);
+            obj["asyncUpdateDrain"] = BlockObj(_asyncUpdate);
+            obj["asyncFixedDrain"] = BlockObj(_asyncFixed);
+            obj["asyncDrained"] = BlockObj(_asyncDrained);
+            obj["asyncFixedSkips"] = _asyncFixedSkips;
 
             // Where the bot/generate stall actually goes. Sections nest inside the total, so `other` is a
             // subtraction rather than a measured span.
-            sb.Append(",\"profileBuild\":{\"profiles\":").Append(ProfileBuild.Profiles)
-              .Append(",\"totalMs\":").Append(Fmt(ProfileBuild.TotalMs))
-              .Append(",\"inventoryMs\":").Append(Fmt(ProfileBuild.InventoryMs))
-              .Append('}');
+            JObject profileBuild = new JObject();
+            profileBuild["profiles"] = ProfileBuild.Profiles;
+            profileBuild["totalMs"] = FmtToken(ProfileBuild.TotalMs);
+            profileBuild["inventoryMs"] = FmtToken(ProfileBuild.InventoryMs);
+            obj["profileBuild"] = profileBuild;
 
             // Raid initialisation - BotsController.Init and the spawn scenarios, which resume inline inside
             // whichever bot/generate callback completes the last preset batch. Emitted only in the window
@@ -1429,8 +1455,9 @@ namespace Ranger
             // the same number seen from two directions.
             if (RaidInit.Any)
             {
-                sb.Append(",\"raidInit\":");
-                RaidInit.Append(sb);
+                StringBuilder raidInitSb = new StringBuilder(256);
+                RaidInit.Append(raidInitSb);
+                obj["raidInit"] = new JRaw(raidInitSb.ToString());
             }
 
             // Raid-scoped, so it repeats every window rather than appearing once:
@@ -1439,29 +1466,32 @@ namespace Ranger
             // the window that observed it is a join waiting to be got wrong.
             if (BossSpawnGate.Any)
             {
-                sb.Append(",\"spawnGate\":");
-                BossSpawnGate.Append(sb);
+                StringBuilder spawnGateSb = new StringBuilder(256);
+                BossSpawnGate.Append(spawnGateSb);
+                obj["spawnGate"] = new JRaw(spawnGateSb.ToString());
             }
-
 
             // Backup-profile system. `bailed` is the one to watch: a flush refused by the in-flight guard
             // leaves the pending list uncleared, which is the suspected source of the 75-bot requests.
-            sb.Append(",\"botBackup\":{\"fired\":").Append(BotBackup.Fired)
-              .Append(",\"bailed\":").Append(BotBackup.Bailed)
-              .Append('}');
+            JObject botBackup = new JObject();
+            botBackup["fired"] = BotBackup.Fired;
+            botBackup["bailed"] = BotBackup.Bailed;
+            obj["botBackup"] = botBackup;
 
             // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
-            // the NDJSON block above - Fired/Bailed are read fresh by the .Append calls, this is a
+            // the NDJSON block above - Fired/Bailed are read fresh above, this is a
             // separate statement after them. Publishes all five fields BotBackup tracks (also
             // Added/PendingMax/LargestRequest), not just the two the NDJSON block emits.
             BotBackup.PublishTelemetry();
-            sb.Append(",\"bundleLoad\":{\"calls\":").Append(BundleLoad.Calls)
-              .Append(",\"keys\":").Append(BundleLoad.Keys)
-              .Append(",\"keysMax\":").Append(BundleLoad.KeysMax)
-              .Append(",\"syncMsMax\":").Append(Fmt(BundleLoad.SyncMsMax))
-              .Append(",\"syncMsTotal\":").Append(Fmt(BundleLoad.SyncMsTotal))
-              .Append(",\"inFlightMax\":").Append(BundleLoad.InFlightMax)
-              .Append('}');
+
+            JObject bundleLoad = new JObject();
+            bundleLoad["calls"] = BundleLoad.Calls;
+            bundleLoad["keys"] = BundleLoad.Keys;
+            bundleLoad["keysMax"] = BundleLoad.KeysMax;
+            bundleLoad["syncMsMax"] = FmtToken(BundleLoad.SyncMsMax);
+            bundleLoad["syncMsTotal"] = FmtToken(BundleLoad.SyncMsTotal);
+            bundleLoad["inFlightMax"] = BundleLoad.InFlightMax;
+            obj["bundleLoad"] = bundleLoad;
 
             // Capstone finding: gcSuspended and worstCallbacks (AsyncDrain.AppendTop) both
             // read AsyncDrain directly - moved into Framesaver's registered window callback
@@ -1470,59 +1500,70 @@ namespace Ranger
 
             // Spawn attempts vs bots that actually resulted. `creates` should track botPool.calls; the
             // gap between `creates` and `botOwners` is how much of the profile and bundle work is wasted.
-            sb.Append(",\"spawn\":{\"creates\":").Append(SpawnAttempts.Creates)
-              .Append(",\"byWave\":").Append(SpawnAttempts.ByWave)
-              .Append(",\"withoutWave\":").Append(SpawnAttempts.WithoutWave)
-              .Append(",\"byTypeForce\":").Append(SpawnAttempts.ByTypeForce)
-              .Append(",\"zoneAttempts\":").Append(SpawnAttempts.ZoneAttempts)
-              .Append(",\"botOwners\":").Append(SpawnAttempts.BotOwners)
-              .Append(",\"createMsTotal\":").Append(Fmt(SpawnAttempts.CreateMsTotal))
-              .Append(",\"createMsMax\":").Append(Fmt(SpawnAttempts.CreateMsMax))
-              .Append(",\"perFrameMax\":").Append(SpawnAttempts.PerFrameMax)
-              .Append(",\"buildMsTotal\":").Append(Fmt(SpawnAttempts.BuildMsTotal))
-              .Append(",\"buildMsMax\":").Append(Fmt(SpawnAttempts.BuildMsMax))
-              .Append(",\"buildPerFrameMax\":").Append(SpawnAttempts.BuildPerFrameMax)
-              .Append('}');
+            JObject spawn = new JObject();
+            spawn["creates"] = SpawnAttempts.Creates;
+            spawn["byWave"] = SpawnAttempts.ByWave;
+            spawn["withoutWave"] = SpawnAttempts.WithoutWave;
+            spawn["byTypeForce"] = SpawnAttempts.ByTypeForce;
+            spawn["zoneAttempts"] = SpawnAttempts.ZoneAttempts;
+            spawn["botOwners"] = SpawnAttempts.BotOwners;
+            spawn["createMsTotal"] = FmtToken(SpawnAttempts.CreateMsTotal);
+            spawn["createMsMax"] = FmtToken(SpawnAttempts.CreateMsMax);
+            spawn["perFrameMax"] = SpawnAttempts.PerFrameMax;
+            spawn["buildMsTotal"] = FmtToken(SpawnAttempts.BuildMsTotal);
+            spawn["buildMsMax"] = FmtToken(SpawnAttempts.BuildMsMax);
+            spawn["buildPerFrameMax"] = SpawnAttempts.BuildPerFrameMax;
+            obj["spawn"] = spawn;
 
             // (worstCallbacks used to be a direct AsyncDrain.AppendTop(sb) call here - moved
             // into Framesaver's window callback with gcSuspended, above. AsyncDrain.
             // PublishTelemetry() - the bus publish of GcSuspended/WorstCallbackMs/
             // WorstCallbackName - stays where AsyncDrain's own code calls it; nothing here
             // calls it directly anymore since nothing here reads AsyncDrain directly anymore.)
-            Block(sb, "playerLate", _playerLate);
-            Block(sb, "playerTick", _playerTick);
+            obj["playerLate"] = BlockObj(_playerLate);
+            obj["playerTick"] = BlockObj(_playerTick);
 
             if (_phases != null)
             {
                 string[] names = PlayerLoopProfiler.PhaseNames;
-                sb.Append(",\"phases\":{");
+                JObject phases = new JObject();
                 for (int i = 0; i < _phases.Length && i < names.Length; i++)
                 {
-                    if (i > 0)
-                    {
-                        sb.Append(',');
-                    }
-
-                    sb.Append('"').Append(names[i]).Append("\":{\"avg\":").Append(Fmt(_phases[i].Average))
-                      .Append(",\"max\":").Append(Fmt(_phases[i].Max)).Append('}');
+                    JObject phase = new JObject();
+                    phase["avg"] = FmtToken(_phases[i].Average);
+                    phase["max"] = FmtToken(_phases[i].Max);
+                    phases[names[i]] = phase;
                 }
 
-                sb.Append('}');
+                obj["phases"] = phases;
             }
 
-            AppendPercentiles(sb, "framePct", _frameSamples);
+            AppendPercentilesObj(obj, "framePct", _frameSamples);
 
-            GpuTelemetry.AppendWindow(sb);
-            GpuTelemetry.AppendGraphicsConfig(sb);
+            // Still StringBuilder-built (GpuTelemetry.cs is one of the sub-modules deliberately left
+            // alone this pass - see this method's own doc comment). Both calls append onto ONE shared
+            // StringBuilder, so they are captured together and spliced as two independent JRaw
+            // fragments by reading the object back out and pulling its properties across - simpler:
+            // wrap each call's own delta in its own StringBuilder instead, since AppendWindow/
+            // AppendGraphicsConfig each only ever emit one top-level key of their own
+            // ("gfxSettings"/"gfx" nested inside... no - re-checked, each emits ",\"key\":{...}" at
+            // the TOP level of the object being built, same shape as every other AppendX call here).
+            StringBuilder gpuWindowSb = new StringBuilder(256);
+            GpuTelemetry.AppendWindow(gpuWindowSb);
+            SpliceRawFields(obj, gpuWindowSb.ToString());
+
+            StringBuilder gpuGfxSb = new StringBuilder(256);
+            GpuTelemetry.AppendGraphicsConfig(gpuGfxSb);
+            SpliceRawFields(obj, gpuGfxSb.ToString());
             // Capstone finding: GcControl.AppendWindow read a Framesaver-only shipping
             // class directly - moved into CapstoneCallbacks.BuildWindow (via GcControl.
-            // AppendWindowTo), invoked below through InvokeWindowCallbacks(sb).
+            // AppendWindowTo), invoked below through InvokeWindowCallbacks(obj).
 
             // Capstone finding (2026-08-17/18): snipersAwake, bossGroups, bots.animCulled*,
             // agents.*, mods, and the tickedSum/liveSum pair all read the 9 shipping classes
             // staying in Framesaver directly - moved into Framesaver's OWN registered window
             // callback (TelemetryBus.RegisterWindowCallback("framesaver.ai.perf", ...)), which
-            // InvokeWindowCallbacks(sb) below already calls and nests under
+            // InvokeWindowCallbacks(obj) below already calls and nests under
             // "framesaver.ai.perf":{...} automatically. The 9 shipping classes' existing
             // RangerBridge.PublishX() calls are UNCHANGED - those are a separate, additive
             // relationship (shipping class publishing OUT to the bus) from this one (Telemetry
@@ -1543,13 +1584,17 @@ namespace Ranger
             //
             // Measured rather than configured because a flushed partial window has the config's duration
             // and not its own. Emitting the setting instead would be exactly the mistake this fixes.
-            Num(sb, "windowSec", elapsed);
+            obj["windowSec"] = FmtToken(elapsed);
 
-            sb.Append(",\"gc\":{\"gen0\":").Append(_gen0 - _gen0Base)
-              .Append(",\"allocMbPerSec\":").Append(Fmt(_allocatedBytes / (1024d * 1024d) / elapsed))
-              .Append(",\"heapMb\":{\"avg\":").Append(Fmt(_heapMb.Average))
-              .Append(",\"min\":").Append(Fmt(_heapMb.Min))
-              .Append(",\"max\":").Append(Fmt(_heapMb.Max)).Append("}}");
+            JObject gc = new JObject();
+            gc["gen0"] = _gen0 - _gen0Base;
+            gc["allocMbPerSec"] = FmtToken(_allocatedBytes / (1024d * 1024d) / elapsed);
+            JObject gcHeapMb = new JObject();
+            gcHeapMb["avg"] = FmtToken(_heapMb.Average);
+            gcHeapMb["min"] = FmtToken(_heapMb.Min);
+            gcHeapMb["max"] = FmtToken(_heapMb.Max);
+            gc["heapMb"] = gcHeapMb;
+            obj["gc"] = gc;
 
             // Repeated per line, not just in the header: BepInEx config is live-editable, so a header written
             // at plugin load can be stale by the time the raid starts.
@@ -1563,19 +1608,19 @@ namespace Ranger
             // uncut and near-50% counts are the aligned-clocks signature rather than a defect rate.
             // Read Sum/Frames as the mean: well under 1 ms is jitter, tens of ms is the mechanism.
             // See CountClockDisagreement.
-            sb.Append(",\"negResidualFrames\":").Append(_negResidualFrames);
-            sb.Append(",\"negResidualWorstMs\":").Append(Fmt(_negResidualWorstMs));
-            sb.Append(",\"negResidualSumMs\":").Append(Fmt(_negResidualSumMs));
-            sb.Append(",\"frameOverPeriodFrames\":").Append(_frameOverPeriodFrames);
-            sb.Append(",\"frameOverPeriodWorstMs\":").Append(Fmt(_frameOverPeriodWorstMs));
-            sb.Append(",\"frameOverPeriodSumMs\":").Append(Fmt(_frameOverPeriodSumMs));
-            sb.Append(",\"clockResidualFrames\":").Append(_clockResidualFrames);
-            sb.Append(",\"boundaryMissedFrames\":").Append(_boundaryMissedFrames);
-            sb.Append(",\"boundaryFires\":").Append(PlayerLoopProfiler.BoundaryFires);
+            obj["negResidualFrames"] = _negResidualFrames;
+            obj["negResidualWorstMs"] = FmtToken(_negResidualWorstMs);
+            obj["negResidualSumMs"] = FmtToken(_negResidualSumMs);
+            obj["frameOverPeriodFrames"] = _frameOverPeriodFrames;
+            obj["frameOverPeriodWorstMs"] = FmtToken(_frameOverPeriodWorstMs);
+            obj["frameOverPeriodSumMs"] = FmtToken(_frameOverPeriodSumMs);
+            obj["clockResidualFrames"] = _clockResidualFrames;
+            obj["boundaryMissedFrames"] = _boundaryMissedFrames;
+            obj["boundaryFires"] = PlayerLoopProfiler.BoundaryFires;
 
-            sb.Append(",\"frameGapArmed\":").Append(Bool(PlayerLoopProfiler.FrameGapArmed));
-            sb.Append(",\"endOfFrameFires\":").Append(PlayerLoopProfiler.EndOfFrameFires);
-            sb.Append(",\"startOfFrameFires\":").Append(PlayerLoopProfiler.StartOfFrameFires);
+            obj["frameGapArmed"] = PlayerLoopProfiler.FrameGapArmed;
+            obj["endOfFrameFires"] = PlayerLoopProfiler.EndOfFrameFires;
+            obj["startOfFrameFires"] = PlayerLoopProfiler.StartOfFrameFires;
 
             // Null when no protocol is loaded, never an empty object - and emitted on every line rather
             // than only when present, so "no protocol" and "this build has no protocol support" are not
@@ -1614,32 +1659,23 @@ namespace Ranger
             // file. Readers keying on the object's presence mark the whole run as protocol legs.
             if (ProtocolRunner.Loaded)
             {
-                sb.Append(",\"protocol\":{\"name\":\"").Append(Escape(ProtocolRunner.Name))
-                  .Append("\",\"step\":").Append(ProtocolRunner.StepIndex)
-                  .Append(",\"steps\":").Append(ProtocolRunner.StepCount)
-                  // 0 means this arm was advanced by hand. Without it a log
-                  // cannot say whether arm boundaries were timed or thumbed,
-                  // and matched raid ages are a claim about the former.
-                  .Append(",\"stepSeconds\":").Append(Fmt(ProtocolRunner.StepSeconds))
-                  .Append(",\"arm\":");
-                string arm = ProtocolRunner.Arm;
-                if (arm == null)
-                {
-                    sb.Append("null");
-                }
-                else
-                {
-                    sb.Append('"').Append(Escape(arm)).Append('"');
-                }
-
-                sb.Append('}');
+                JObject protocol = new JObject();
+                protocol["name"] = ProtocolRunner.Name;
+                protocol["step"] = ProtocolRunner.StepIndex;
+                protocol["steps"] = ProtocolRunner.StepCount;
+                // 0 means this arm was advanced by hand. Without it a log
+                // cannot say whether arm boundaries were timed or thumbed,
+                // and matched raid ages are a claim about the former.
+                protocol["stepSeconds"] = FmtToken(ProtocolRunner.StepSeconds);
+                protocol["arm"] = ProtocolRunner.Arm;
+                obj["protocol"] = protocol;
             }
             else
             {
-                sb.Append(",\"protocol\":null");
+                obj["protocol"] = null;
             }
 
-            sb.Append(",\"flushedByProtocol\":").Append(Bool(_flushedByProtocol));
+            obj["flushedByProtocol"] = _flushedByProtocol;
 
             // windowSeconds is the SETTING; windowSec above is what this window actually lasted. Both,
             // because a short measured window has two causes that need telling apart: a flush closed it
@@ -1649,13 +1685,20 @@ namespace Ranger
             // Capstone finding (2026-08-17/18): the entire `cfg` block (~25 Plugin.X shipping
             // config reads plus GcControl.AppendCfg) moved into Framesaver's registered window
             // callback alongside the fields removed above - same reasoning, nested under
-            // "framesaver.ai.perf":{...} by InvokeWindowCallbacks(sb) just below.
+            // "framesaver.ai.perf":{...} by InvokeWindowCallbacks below.
 
-            TelemetryBus.InvokeWindowCallbacks(sb);
+            // TelemetryBus.InvokeWindowCallbacks builds its own JObject internally (has since
+            // 2026-08-18) and previously spliced it into a StringBuilder as raw text. That
+            // StringBuilder-facing overload still exists for WriteHeader/WriteMark/EmitSpikeEvent
+            // (unconverted this pass - Tau's slice), so it is reused here via one small
+            // StringBuilder capturing exactly the callback splice and nothing else, then merged in
+            // as JObject fields the same way the GpuTelemetry fragments above are.
+            StringBuilder windowCallbackSb = new StringBuilder(256);
+            TelemetryBus.InvokeWindowCallbacks(windowCallbackSb);
+            SpliceRawFields(obj, windowCallbackSb.ToString());
 
-            sb.Append('}');
-
-            Append(sb.ToString());
+            string line = obj.ToString(Formatting.None);
+            Append(line);
 
             // Bot spawn/death lines, flushed after the window they were stamped
             // with so a reader meets the window before the events inside it.
@@ -2149,11 +2192,217 @@ namespace Ranger
             _windowStart = Time.realtimeSinceStartup;
         }
 
+        /// <summary>
+        /// JObject counterpart to <see cref="AppendRaidIdentity(StringBuilder)"/>. Same two fields.
+        /// </summary>
+        private void AppendRaidIdentityObj(JObject obj)
+        {
+            obj["raid"] = _raid;
+            obj["map"] = _map;
+        }
+
+        /// <summary>
+        /// JObject counterpart to <see cref="AppendRaidClock(StringBuilder)"/>. Omits all three fields
+        /// when outside a raid, same as the StringBuilder version omitting the fragment entirely.
+        /// </summary>
+        private static void AppendRaidClockObj(JObject obj)
+        {
+            double elapsed, remaining;
+            if (!TryGetRaidClock(out elapsed, out remaining))
+            {
+                return;
+            }
+
+            obj["raidElapsed"] = FmtToken(elapsed);
+            obj["raidLeft"] = FmtToken(remaining);
+            obj["raidClock"] = Clock(remaining);
+        }
+
+        /// <summary>
+        /// JObject counterpart to <see cref="AppendPosition(StringBuilder)"/>. Same null-vs-populated
+        /// shape: `pos.dist` is null with `samples:0` when nothing was ever sampled, never a zero that
+        /// could be mistaken for a held position.
+        /// </summary>
+        private void AppendPositionObj(JObject obj)
+        {
+            JObject pos = new JObject();
+            if (_posSamples == 0)
+            {
+                pos["dist"] = null;
+                pos["samples"] = 0;
+                obj["pos"] = pos;
+                return;
+            }
+
+            pos["dist"] = FmtToken(_distance);
+            pos["samples"] = _posSamples;
+            pos["x"] = new JArray(FmtToken(_posMin.x), FmtToken(_posMax.x));
+            pos["y"] = new JArray(FmtToken(_posMin.y), FmtToken(_posMax.y));
+            pos["z"] = new JArray(FmtToken(_posMin.z), FmtToken(_posMax.z));
+            pos["end"] = new JArray(FmtToken(_lastPos.x), FmtToken(_lastPos.y), FmtToken(_lastPos.z));
+            AppendLookObj(pos);
+            obj["pos"] = pos;
+        }
+
+        /// <summary>
+        /// JObject counterpart to <see cref="AppendLook(StringBuilder)"/>, nested inside the `pos`
+        /// object passed in (matching the StringBuilder version's `,"look":...` placement inside the
+        /// same `pos:{...}` block). Null, never zero, when nothing was sampled - see that method's own
+        /// doc comment for why.
+        /// </summary>
+        private void AppendLookObj(JObject pos)
+        {
+            if (_lookSamples == 0)
+            {
+                pos["look"] = null;
+                return;
+            }
+
+            JObject look = new JObject();
+            look["samples"] = _lookSamples;
+            JObject yaw = new JObject();
+            yaw["range"] = new JArray(FmtToken(_yawMin), FmtToken(_yawMax));
+            yaw["swept"] = FmtToken(_yawSwept);
+            look["yaw"] = yaw;
+            JObject pitch = new JObject();
+            pitch["range"] = new JArray(FmtToken(_pitchMin), FmtToken(_pitchMax));
+            pitch["swept"] = FmtToken(_pitchSwept);
+            look["pitch"] = pitch;
+            pos["look"] = look;
+        }
+
+        /// <summary>
+        /// JObject counterpart to <see cref="AppendProc(StringBuilder)"/>. Same three error shapes
+        /// (pinvoke/zero/call) and the same null-on-first-window baseline deltas as the original - see
+        /// that method's own doc comment for the full reasoning, unchanged here.
+        /// </summary>
+        private void AppendProcObj(JObject obj)
+        {
+            ProcessMemoryCountersEx c = default(ProcessMemoryCountersEx);
+            bool ok;
+
+            try
+            {
+                ok = GetProcessMemoryInfo(GetCurrentProcess(), out c,
+                                          (uint)Marshal.SizeOf(typeof(ProcessMemoryCountersEx)));
+            }
+            catch (Exception)
+            {
+                JObject errProc = new JObject();
+                errProc["err"] = "pinvoke";
+                obj["proc"] = errProc;
+                return;
+            }
+
+            long ws = ok ? (long)c.WorkingSetSize.ToUInt64() : 0L;
+            long priv = ok ? (long)c.PrivateUsage.ToUInt64() : 0L;
+
+            if (!ok || ws == 0L || priv == 0L)
+            {
+                JObject errProc = new JObject();
+                errProc["err"] = ok ? "zero" : "call";
+                obj["proc"] = errProc;
+                return;
+            }
+
+            long faults = c.PageFaultCount;
+
+            JObject proc = new JObject();
+            proc["wsMb"] = ws / 1048576L;
+            proc["privMb"] = priv / 1048576L;
+            proc["notResidentMb"] = (priv - ws) / 1048576L;
+            proc["faults"] = faults;
+
+            if (_hasProcBaseline)
+            {
+                proc["wsDeltaMb"] = (ws - _lastWs) / 1048576L;
+                proc["privDeltaMb"] = (priv - _lastPriv) / 1048576L;
+                proc["faultsDelta"] = faults - _lastFaults;
+            }
+            else
+            {
+                proc["wsDeltaMb"] = null;
+                proc["privDeltaMb"] = null;
+                proc["faultsDelta"] = null;
+            }
+
+            obj["proc"] = proc;
+
+            _lastWs = ws;
+            _lastPriv = priv;
+            _lastFaults = faults;
+            _hasProcBaseline = true;
+        }
+
+        /// <summary>
+        /// JObject counterpart to <see cref="AppendPercentiles(StringBuilder, string, List{double})"/>.
+        /// Omits the field entirely on an empty sample set, same as the StringBuilder version.
+        /// </summary>
+        private static void AppendPercentilesObj(JObject obj, string name, List<double> samples)
+        {
+            if (samples.Count == 0)
+            {
+                return;
+            }
+
+            samples.Sort();
+            JObject pct = new JObject();
+            pct["p50"] = FmtToken(Percentile(samples, 0.50));
+            pct["p75"] = FmtToken(Percentile(samples, 0.75));
+            pct["p95"] = FmtToken(Percentile(samples, 0.95));
+            pct["p99"] = FmtToken(Percentile(samples, 0.99));
+            pct["p999"] = FmtToken(Percentile(samples, 0.999));
+            obj[name] = pct;
+        }
+
+        /// <summary>
+        /// Parses a StringBuilder fragment shaped like `,"key1":val1,"key2":val2,...` (the comma-first
+        /// convention every AppendX method in this class uses) and merges each key into `obj` as a
+        /// JRaw value - i.e. embeds the ALREADY-SERIALIZED text verbatim rather than re-parsing it into
+        /// a JObject/JValue tree. Used for the sub-modules (GpuTelemetry, TelemetryBus's registered
+        /// callback splice) this pass deliberately leaves StringBuilder-based - see Flush()'s own doc
+        /// comment for why. Wraps the fragment in `{...}` first so Newtonsoft's own parser (rather than
+        /// hand-rolled comma splitting, which the original code never needed either) does the actual
+        /// key/value split, which is the same trust boundary SpliceFields in TelemetryBus.cs already
+        /// relies on for the registered-callback path.
+        /// </summary>
+        private static void SpliceRawFields(JObject obj, string commaFirstFragment)
+        {
+            if (string.IsNullOrEmpty(commaFirstFragment))
+            {
+                return;
+            }
+
+            JObject parsed = JObject.Parse("{" + commaFirstFragment.Substring(1) + "}");
+            foreach (JProperty prop in parsed.Properties())
+            {
+                obj[prop.Name] = new JRaw(prop.Value.ToString(Formatting.None));
+            }
+        }
+
         private static void Block(StringBuilder sb, string name, Stat s)
         {
             sb.Append(",\"").Append(name).Append("\":{\"avg\":").Append(Fmt(s.Average))
               .Append(",\"min\":").Append(Fmt(s.Min))
               .Append(",\"max\":").Append(Fmt(s.Max)).Append('}');
+        }
+
+        /// <summary>
+        /// JObject counterpart to <see cref="Block(StringBuilder, string, Stat)"/>, same three fields.
+        /// Fmt already returns "null" as a STRING for NaN/Infinity, which is correct for the
+        /// StringBuilder path (it is spliced verbatim into JSON text) but wrong here - JObject would
+        /// serialize a C# string "null" as the four characters "null" WITH quotes around it
+        /// ("\"null\""), which is not the same JSON value as the bare token null. FmtToken (below)
+        /// returns a proper JValue for both cases and every JObject-building method in this class uses
+        /// it instead of Fmt for exactly this reason.
+        /// </summary>
+        private static JObject BlockObj(Stat s)
+        {
+            JObject obj = new JObject();
+            obj["avg"] = FmtToken(s.Average);
+            obj["min"] = FmtToken(s.Min);
+            obj["max"] = FmtToken(s.Max);
+            return obj;
         }
 
         private static void Num(StringBuilder sb, string name, double value)
@@ -2175,6 +2424,22 @@ namespace Ranger
             }
 
             return value.ToString("0.###", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// JObject counterpart to <see cref="Fmt"/>: returns a real JValue rather than a string, so
+        /// NaN/Infinity become the bare JSON token `null` (JValue.CreateNull()) instead of the quoted
+        /// string "null" that a plain `obj["x"] = Fmt(value)` would produce. Every JObject-building
+        /// method in this class calls this instead of Fmt for numeric fields.
+        /// </summary>
+        private static JToken FmtToken(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+            {
+                return JValue.CreateNull();
+            }
+
+            return new JValue(value);
         }
 
         /// <summary>
