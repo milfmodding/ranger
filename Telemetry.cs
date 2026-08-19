@@ -1343,6 +1343,40 @@ namespace Ranger
             AppendPosition(sb);
             AppendProc(sb);
 
+            // CAPSTONE BUG FOUND AND FIXED (2026-08-19, editing pass): this whole "bots"
+            // block existed pre-cutover (awake/asleep/total/exempt/standByRefused/
+            // roleUnknown) but was never re-added after the capstone move - CountBots()
+            // above still computes every one of these six locals every window, and
+            // nothing ever wrote them to the NDJSON line. A genuinely LIVE regression:
+            // every raid recorded since the capstone (b8a2a19/96e3871), including the
+            // capstone-verify raid itself, is missing this block, and nothing in that
+            // raid's 3-point verdict checked for it. Found by tests/unwrap's migrated
+            // suite catching a stale-binding-flags crash, which led to auditing every
+            // "emits X" assertion against the actual IL rather than trusting the prior
+            // migration's claim that this data "stays flat, unchanged" (FIELD-MAPPING.md
+            // was wrong about this one - corrected in the same commit as this fix).
+            // Restored verbatim from the pre-cutover source (Framesaver 3ad1b55).
+            sb.Append(",\"bots\":{\"awake\":").Append(awake)
+              .Append(",\"asleep\":").Append(asleep)
+              .Append(",\"total\":").Append(awake + asleep)
+              .Append(",\"exempt\":").Append(exempt)
+              .Append(",\"standByRefused\":").Append(standByRefused)
+              .Append(",\"roleUnknown\":").Append(roleUnknown).Append('}');
+
+            // Ranger extraction, additive: publish the same five counts to the bus so
+            // other consumers can read them without re-deriving. This used to be a
+            // RangerBridge.PublishBotStandByCounts call FROM Framesaver INTO Ranger, back
+            // when Telemetry.cs lived in Framesaver's assembly and needed the bridge's
+            // JIT-isolation to touch TelemetryBus safely. Now that this file IS Ranger, the
+            // bridge indirection is pointless (and does not compile - Ranger has no
+            // reference to Framesaver, by design) - a plain, same-assembly TelemetryBus call,
+            // no Present gate needed since TelemetryBus is always here.
+            TelemetryBus.Event("botStandBy.awake", awake);
+            TelemetryBus.Event("botStandBy.asleep", asleep);
+            TelemetryBus.Event("botStandBy.exempt", exempt);
+            TelemetryBus.Event("botStandBy.roleUnknown", roleUnknown);
+            TelemetryBus.Event("botStandBy.standByRefused", standByRefused);
+
             Block(sb, "frame", _frame);
             Block(sb, "gameUpdate", _gameUpdate);
             Block(sb, "jobQueue", _jobQueue);
