@@ -202,6 +202,61 @@ namespace Ranger
             new BotSpawnLogPatch().Enable();
             new BotActivationCanaryPatch().Enable();
 
+            // ---- Wiring-gap fix (2026-08-19, editing pass): these ~26 classes' SOURCE FILES
+            // already moved to Ranger in the earlier batch-1/2/3 git-filter-repo moves
+            // (EXTRACTION-PLAN.md), but their .Enable() calls were never added here - so
+            // Framesaver's OLD copies of the same classes kept firing into a static-data copy
+            // nobody read (Telemetry.cs, the only reader, moved to Ranger at the capstone),
+            // while these live, correct, Ranger-side copies sat permanently unpopulated. Found
+            // via tests/unwrap + a raid-log audit showing updateManual/spawn/bundleLoad/
+            // profileBuild all-zero in every sample line of the deployed capstone-verify raid.
+            // This list mirrors Framesaver's own .Enable() list exactly (see that file's Awake,
+            // "Capstone cutover" comment) for every class WHOSE SOURCE HAS ALREADY MOVED -
+            // AsyncDrainPatch itself is deliberately excluded: its diagnostics half (which reads
+            // ProfileBuild/BundleLoad/RaidInit) was ALSO planned to split into Ranger per
+            // EXTRACTION-PLAN.md's capstone-sequence section, and that split never happened -
+            // AsyncDrainPatch.cs is still 100% Framesaver-side. Splitting it is separate,
+            // deliberate follow-on work, not folded into this mechanical wiring fix.
+            new BotsControllerTickPatch().Enable();
+            new UpdateManualTimingPatch().Enable();
+            new BossWaveSettingsPatch().Enable();
+            new BotControllerSettingsPatch().Enable();
+            // AsyncWorkerUpdatePatch/AsyncWorkerFixedUpdatePatch deliberately NOT enabled here.
+            // Found and fixed same-session: AsyncWorkerTimingPatches.cs is a MIXED file
+            // (EXTRACTION-PLAN.md, Sophia's 2026-08-17 05:13Z ruling) - its FixedUpdate patch's
+            // Prefix implements the shipping "Drain completions in Update only" lever
+            // (Plugin.DrainInUpdateOnly), not just measurement. Deleting Framesaver's whole
+            // file (this session's first pass) silently dropped that lever; restoring it means
+            // Framesaver keeps the ONE Harmony patch on both AsyncWorker.Update/.FixedUpdate,
+            // now writing into THIS class's statics via RangerBridge instead of a
+            // Framesaver-local field. Enabling these two classes here as well would put a
+            // SECOND Harmony patch on the same two methods - this class (AsyncWorkerTiming)
+            // stays enabled as data storage only; its two ModulePatch classes stay disabled.
+            new ProfileCtorPatch().Enable();
+            new ProfileInventoryPatch().Enable();
+            new BundleLoadPatch().Enable();
+            new SpawnCreateDataPatch().Enable();
+            new SpawnByWavePatch().Enable();
+            new SpawnWithoutWavePatch().Enable();
+            new SpawnByTypeForcePatch().Enable();
+            new SpawnZoneAttemptPatch().Enable();
+            new BotOwnerCreatePatch().Enable();
+            new BotCreateWorkPatch().Enable();
+
+            // Raid initialisation, which resumes inline inside the last bot/generate completion callback and
+            // is the unexplained 16.7s. One-shot per raid, so no per-frame cost.
+            new BotsControllerInitPatch().Enable();
+            new WavesSpawnRunPatch().Enable();
+            new NonWavesSpawnRunPatch().Enable();
+            new BossSpawnRunPatch().Enable();
+            new CoversRestorePatch().Enable();
+            new CoversCachePointsPatch().Enable();
+            new BotDoorsRefreshPatch().Enable();
+            new BotZoneInitPatch().Enable();
+            new PatrolZoneMapPatch().Enable();
+            new CutControllerInitPatch().Enable();
+            new LootClusterScanPatch().Enable();
+
             // Death-event subscription moves with BotLog - see BotLog.Subscribe's own doc
             // comment for why the guard against a double subscription matters here specifically.
             BotLog.Subscribe();

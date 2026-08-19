@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Text;
 using EFT;
 using EFT.Bots;
 using HarmonyLib;
+using Newtonsoft.Json.Linq;
 using SPT.Reflection.Patching;
 
 namespace Ranger
@@ -144,26 +144,30 @@ namespace Ranger
             get { return _sawWaves || _sawSettings; }
         }
 
-        public static void Append(StringBuilder sb)
+        /// <summary>
+        /// JObject conversion (2026-08-19, sub-module follow-on pass): was a StringBuilder
+        /// fragment builder, same class of risk the "bots" block bug came from - a
+        /// silently-missing .Append(...) call reads identically to correct output around
+        /// it. Now builds a real JObject directly; Telemetry.cs's Flush() assigns it to
+        /// obj["spawnGate"] rather than wrapping it in JRaw.
+        /// </summary>
+        public static JObject Append()
         {
-            sb.Append("{\"sawWaves\":").Append(_sawWaves ? "true" : "false")
-              .Append(",\"sawSettings\":").Append(_sawSettings ? "true" : "false")
-              .Append(",\"entries\":").Append(_entries)
-              .Append(",\"pveOffline\":").Append(_pveOffline ? "true" : "false")
-              .Append(",\"botAmountWaves\":\"").Append(_botAmountWaves).Append('"')
-              .Append(",\"botAmountRaid\":\"").Append(_botAmountRaid).Append('"')
-              .Append(",\"forced\":");
-            Roles(sb, Forced);
-            sb.Append(",\"excluded\":");
-            Roles(sb, Excluded);
-            sb.Append(",\"excludedRaw\":");
-            Strings(sb, ExcludedRaw);
+            JObject obj = new JObject();
+            obj["sawWaves"] = _sawWaves;
+            obj["sawSettings"] = _sawSettings;
+            obj["entries"] = _entries;
+            obj["pveOffline"] = _pveOffline;
+            obj["botAmountWaves"] = _botAmountWaves;
+            obj["botAmountRaid"] = _botAmountRaid;
+            obj["forced"] = Roles(Forced);
+            obj["excluded"] = Roles(Excluded);
+            obj["excludedRaw"] = Strings(ExcludedRaw);
 
             // null, not [], unless BOTH halves were observed. See _sawWaves.
-            sb.Append(",\"forcedButExcluded\":");
             if (!_sawWaves || !_sawSettings)
             {
-                sb.Append("null");
+                obj["forcedButExcluded"] = JValue.CreateNull();
             }
             else
             {
@@ -176,34 +180,36 @@ namespace Ranger
                     }
                 }
 
-                Roles(sb, hit);
+                obj["forcedButExcluded"] = Roles(hit);
             }
 
-            sb.Append('}');
+            return obj;
         }
 
-        private static void Roles(StringBuilder sb, List<WildSpawnType> roles)
+        private static JArray Roles(List<WildSpawnType> roles)
         {
-            sb.Append('[');
+            JArray arr = new JArray();
             for (int i = 0; i < roles.Count; i++)
             {
-                if (i > 0) sb.Append(',');
-                sb.Append('"').Append(roles[i].ToString()).Append('"');
+                arr.Add(roles[i].ToString());
             }
 
-            sb.Append(']');
+            return arr;
         }
 
-        private static void Strings(StringBuilder sb, List<string> values)
+        private static JArray Strings(List<string> values)
         {
-            sb.Append('[');
+            // JValue/JArray handle their own quoting and escaping - the manual
+            // Replace("\\",...).Replace("\"",...) escaping the StringBuilder version did
+            // by hand is exactly the kind of hand-matched-quote logic this conversion
+            // removes a class of bugs from.
+            JArray arr = new JArray();
             for (int i = 0; i < values.Count; i++)
             {
-                if (i > 0) sb.Append(',');
-                sb.Append('"').Append(values[i].Replace("\\", "\\\\").Replace("\"", "\\\"")).Append('"');
+                arr.Add(values[i]);
             }
 
-            sb.Append(']');
+            return arr;
         }
 
     }

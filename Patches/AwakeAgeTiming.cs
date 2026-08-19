@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
-using System.Text;
 using Comfort.Common;
 using EFT;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace Ranger
@@ -193,27 +193,53 @@ namespace Ranger
         /// `toS` is the bucket's upper edge in seconds, null for the tail, so
         /// a reader never has to know the edges from somewhere else.
         /// </summary>
-        public static void Append(StringBuilder sb)
+        /// <summary>
+        /// JObject/JArray conversion (2026-08-19, sub-module pass following Telemetry.cs's
+        /// own Flush()/WriteHeader/WriteMark/EmitSpikeEvent conversion) - see
+        /// UpdateManualTiming.AppendObj's own comment for the shared reasoning. This field
+        /// is a top-level ARRAY of bucket objects (not a single object), so the JObject
+        /// counterparts elsewhere in this codebase do not apply directly - JArray is the
+        /// right shape here, built natively rather than via string concatenation.
+        /// </summary>
+        public static JArray AppendObj()
         {
-            sb.Append('[');
+            JArray arr = new JArray();
             for (int i = 0; i < Calls.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append("{\"toS\":");
-                sb.Append(i < Bounds.Length
-                          ? Bounds[i].ToString("0.#", CultureInfo.InvariantCulture)
-                          : "null");
-                sb.Append(",\"ms\":").Append(Ms(Ticks[i]))
-                  .Append(",\"n\":").Append(Calls[i]).Append('}');
+                JObject bucket = new JObject();
+                bucket["toS"] = i < Bounds.Length ? (JToken)Bounds[i] : JValue.CreateNull();
+                bucket["ms"] = MsToken(Ticks[i]);
+                bucket["n"] = Calls[i];
+                arr.Add(bucket);
             }
 
-            sb.Append(']');
+            return arr;
         }
 
+        /// <summary>
+        /// JObject counterpart to the retired StringBuilder-facing Ms(long) - same shape as
+        /// UpdateManualTiming.MsToken, duplicated here rather than shared for the same reason.
+        /// </summary>
+        private static JToken MsToken(long ticks)
+        {
+            double ms = AiTiming.ToMs(ticks);
+            if (double.IsNaN(ms) || double.IsInfinity(ms))
+            {
+                return JValue.CreateNull();
+            }
+
+            return new JValue(ms);
+        }
+
+        /// <summary>
+        /// String-formatting counterpart, kept alongside MsToken rather than replaced by it -
+        /// DrainRows below emits a complete NDJSON line via plain string concatenation (its
+        /// own emit(string) callback, not a field inside Telemetry.Flush()'s JObject), which
+        /// is deliberately out of scope for this pass: it is a per-bot per-window ROW, not a
+        /// fragment of the per-window sample line the JObject conversion targets. Converting
+        /// it to build a JObject would mean giving BotLog.Drain's emit(string) signature a
+        /// JObject overload too, which is a wider change than this pass's stated scope.
+        /// </summary>
         private static string Ms(long ticks)
         {
             return AiTiming.ToMs(ticks).ToString("0.###", CultureInfo.InvariantCulture);

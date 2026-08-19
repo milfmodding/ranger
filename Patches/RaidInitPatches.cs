@@ -1,10 +1,9 @@
 using System;
 using System.Diagnostics;
-using System.Globalization;
 using System.Reflection;
-using System.Text;
 using EFT;
 using HarmonyLib;
+using Newtonsoft.Json.Linq;
 using SPT.Reflection.Patching;
 
 namespace Ranger
@@ -286,64 +285,73 @@ namespace Ranger
             get { return TotalMs > 0d; }
         }
 
-        public static void Append(StringBuilder sb)
+        /// <summary>
+        /// JObject conversion (2026-08-19, sub-module follow-on pass): was a StringBuilder
+        /// fragment builder, same class of risk the "bots" block bug came from - a
+        /// silently-missing .Append(...) call reads identically to correct output around
+        /// it. Now builds a real JObject directly; Telemetry.cs's Flush() assigns it to
+        /// obj["raidInit"] rather than wrapping it in JRaw.
+        /// </summary>
+        public static JObject Append()
         {
-            sb.Append("{\"totalMs\":").Append(F(TotalMs))
-              .Append(",\"controllerInitMs\":").Append(F(ControllerInitMs))
-              .Append(",\"wavesRunMs\":").Append(F(WavesRunMs))
-              .Append(",\"nonWavesRunMs\":").Append(F(NonWavesRunMs))
-              .Append(",\"bossRunMs\":").Append(F(BossRunMs))
-              .Append(",\"inside\":{\"coversRestoreMs\":").Append(F(CoversRestoreMs))
-              .Append(",\"coversCacheMs\":").Append(F(CoversCacheMs))
-              .Append(",\"doorsMs\":").Append(F(DoorsMs))
-              .Append(",\"zoneInitMs\":").Append(F(ZoneInitMs))
-              .Append(",\"zones\":").Append(Zones)
-              .Append(",\"patrolMapMs\":").Append(F(PatrolMapMs))
-              .Append(",\"cutMs\":").Append(F(CutMs))
-              .Append(",\"cutCalls\":").Append(CutCalls)
-              .Append(",\"lootScanMs\":").Append(F(LootScanMs))
-              .Append(",\"lootClusters\":").Append(LootClusters)
-              .Append(",\"otherMs\":").Append(F(ControllerOtherMs))
-              .Append('}');
+            JObject obj = new JObject();
+            obj["totalMs"] = FT(TotalMs);
+            obj["controllerInitMs"] = FT(ControllerInitMs);
+            obj["wavesRunMs"] = FT(WavesRunMs);
+            obj["nonWavesRunMs"] = FT(NonWavesRunMs);
+            obj["bossRunMs"] = FT(BossRunMs);
+
+            JObject inside = new JObject();
+            inside["coversRestoreMs"] = FT(CoversRestoreMs);
+            inside["coversCacheMs"] = FT(CoversCacheMs);
+            inside["doorsMs"] = FT(DoorsMs);
+            inside["zoneInitMs"] = FT(ZoneInitMs);
+            inside["zones"] = Zones;
+            inside["patrolMapMs"] = FT(PatrolMapMs);
+            inside["cutMs"] = FT(CutMs);
+            inside["cutCalls"] = CutCalls;
+            inside["lootScanMs"] = FT(LootScanMs);
+            inside["lootClusters"] = LootClusters;
+            inside["otherMs"] = FT(ControllerOtherMs);
+            obj["inside"] = inside;
 
             // Bucket B - the vmethod_1 tail outside Init. preInit is the BotZone scene scan.
-            sb.Append(",\"preInitMs\":").Append(F(PreInitMs))
-              .Append(",\"spawnActionMs\":").Append(F(SpawnActionMs));
+            obj["preInitMs"] = FT(PreInitMs);
+            obj["spawnActionMs"] = FT(SpawnActionMs);
 
             // The complete partition. These sum to controllerInitMs, so whichever one is fat IS the answer -
             // unlike `inside`, which sampled seven calls and missed 91% of it.
-            sb.Append(",\"initGen0\":").Append(InitGen0)
-              .Append(",\"initHeapDeltaMb\":").Append(F(InitHeapDeltaMb));
+            obj["initGen0"] = InitGen0;
+            obj["initHeapDeltaMb"] = FT(InitHeapDeltaMb);
 
-            sb.Append(",\"segments\":{");
-            bool first = true;
+            JObject segments = new JObject();
             for (int i = 0; i < SegCount; i++)
             {
-                if (!first)
-                {
-                    sb.Append(',');
-                }
-
-                first = false;
-
                 // Emitted as [ms, gen0] rather than two parallel objects so a segment's time and its GC
                 // contamination cannot be read apart from each other by accident.
-                sb.Append('"').Append(SegNames[i]).Append("\":[").Append(F(SegMs[i]))
-                  .Append(',').Append(SegGen0[i]).Append(']');
+                segments[SegNames[i]] = new JArray(FT(SegMs[i]), SegGen0[i]);
             }
 
-            sb.Append("}}");
+            obj["segments"] = segments;
+
+            return obj;
         }
 
-        /// <summary>Local copy of Telemetry's formatter so this block stays self-contained.</summary>
-        private static string F(double value)
+        /// <summary>
+        /// JObject-safe formatter: NaN/Infinity become the bare JSON token null (JValue.CreateNull())
+        /// rather than the quoted string "null" the old StringBuilder-facing F(double) returned - that
+        /// distinction matters for a JObject assignment the way it did not for text appended into a
+        /// StringBuilder. Named FT rather than colliding with Telemetry.cs's own FmtToken since this
+        /// class stays self-contained (same reasoning the old F(double) comment gave).
+        /// </summary>
+        private static JToken FT(double value)
         {
             if (double.IsNaN(value) || double.IsInfinity(value))
             {
-                return "null";
+                return JValue.CreateNull();
             }
 
-            return value.ToString("0.###", CultureInfo.InvariantCulture);
+            return new JValue(value);
         }
 
         public static void ResetWindow()

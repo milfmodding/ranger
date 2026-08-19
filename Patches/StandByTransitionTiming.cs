@@ -1,5 +1,4 @@
-using System.Globalization;
-using System.Text;
+using Newtonsoft.Json.Linq;
 
 namespace Ranger
 {
@@ -93,25 +92,39 @@ namespace Ranger
             _diedAsleep++;
         }
 
-        public static void Append(StringBuilder sb)
+        /// <summary>
+        /// JObject conversion (2026-08-19, sub-module pass following Telemetry.cs's own
+        /// Flush()/WriteHeader/WriteMark/EmitSpikeEvent conversion) - see UpdateManualTiming.
+        /// AppendObj's own comment for the shared reasoning. Builds a real JObject, embedded
+        /// directly by the Flush() caller rather than captured as StringBuilder text + JRaw.
+        /// </summary>
+        public static JObject AppendObj()
         {
-            sb.Append("{\"woken\":").Append(_woken)
-              .Append(",\"wokenMs\":").Append(Ms(_wakeTicks))
-              .Append(",\"slept\":").Append(_slept)
-              .Append(",\"sleptMs\":").Append(Ms(_sleepTicks))
-              .Append(",\"diedAwake\":").Append(_diedAwake)
-              .Append(",\"diedAsleep\":").Append(_diedAsleep)
-              .Append('}');
+            JObject obj = new JObject();
+            obj["woken"] = _woken;
+            obj["wokenMs"] = MsToken(_wakeTicks);
+            obj["slept"] = _slept;
+            obj["sleptMs"] = MsToken(_sleepTicks);
+            obj["diedAwake"] = _diedAwake;
+            obj["diedAsleep"] = _diedAsleep;
+            return obj;
         }
 
         /// <summary>
-        /// InvariantCulture for the same reason UpdateManualTiming.Ms gives:
-        /// a comma-decimal locale turns 2.5 into 2,5 and every window in the
-        /// file stops parsing.
+        /// JObject counterpart to the retired StringBuilder-facing Ms(long) - same shape as
+        /// UpdateManualTiming.MsToken, duplicated here rather than shared for the same reason.
+        /// InvariantCulture still load-bearing for AiTiming.ToMs's own double, not for a
+        /// formatted string here since JValue carries the double directly.
         /// </summary>
-        private static string Ms(long ticks)
+        private static JToken MsToken(long ticks)
         {
-            return AiTiming.ToMs(ticks).ToString("0.###", CultureInfo.InvariantCulture);
+            double ms = AiTiming.ToMs(ticks);
+            if (double.IsNaN(ms) || double.IsInfinity(ms))
+            {
+                return JValue.CreateNull();
+            }
+
+            return new JValue(ms);
         }
 
         public static void ResetWindow()

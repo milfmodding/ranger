@@ -1225,27 +1225,27 @@ namespace Ranger
             // window, not a distribution - the quantity wanted is a per-call mean
             // per bucket, so the divisor has to travel with the total.
             //
-            // Still StringBuilder-built (see this method's own doc comment above for why this
-            // pass leaves the sub-modules alone) - embedded verbatim via JRaw.
-            StringBuilder updateManualSb = new StringBuilder(256);
-            UpdateManualTiming.Append(updateManualSb);
-            obj["updateManual"] = new JRaw(updateManualSb.ToString());
+            // JObject conversion (2026-08-19, sub-module pass): UpdateManualTiming now
+            // builds its own JObject directly (AppendObj), so this embeds it as a real
+            // nested object rather than capturing StringBuilder output and JRaw-wrapping it.
+            obj["updateManual"] = UpdateManualTiming.AppendObj();
 
             // Everything else here is per frame. A cost paid per TRANSITION is
             // invisible to all of it - smeared across whichever frames held a
             // transition, which reads as a tail rather than a level. Gross
             // counts, so `wokenMs / woken` is the cost of one wake.
-            StringBuilder standByTransitionsSb = new StringBuilder(256);
-            StandByTransitions.Append(standByTransitionsSb);
-            obj["standByTransitions"] = new JRaw(standByTransitionsSb.ToString());
+            //
+            // JObject conversion (2026-08-19, sub-module pass): StandByTransitions now
+            // builds its own JObject directly, same pattern as UpdateManualTiming above.
+            obj["standByTransitions"] = StandByTransitions.AppendObj();
 
             // updateManual's cost split by how long each bot has been
             // continuously awake. The buckets are the per-bot part: a window
             // with one old bot and ten young ones reports them separately,
             // which the pooled mean beside it cannot.
-            StringBuilder awakeAgeSb = new StringBuilder(256);
-            AwakeAge.Append(awakeAgeSb);
-            obj["awakeAge"] = new JRaw(awakeAgeSb.ToString());
+            // JObject conversion (2026-08-19, sub-module pass): AwakeAge now builds its
+            // own JArray directly, same pattern as UpdateManualTiming/StandByTransitions.
+            obj["awakeAge"] = AwakeAge.AppendObj();
 
             // -1 means the event's backing field could not be found, never 0.
             // Settles unbounded-but-cheap against bounded, which timing cannot.
@@ -1273,9 +1273,7 @@ namespace Ranger
             // the same number seen from two directions.
             if (RaidInit.Any)
             {
-                StringBuilder raidInitSb = new StringBuilder(256);
-                RaidInit.Append(raidInitSb);
-                obj["raidInit"] = new JRaw(raidInitSb.ToString());
+                obj["raidInit"] = RaidInit.Append();
             }
 
             // Raid-scoped, so it repeats every window rather than appearing once:
@@ -1284,9 +1282,7 @@ namespace Ranger
             // the window that observed it is a join waiting to be got wrong.
             if (BossSpawnGate.Any)
             {
-                StringBuilder spawnGateSb = new StringBuilder(256);
-                BossSpawnGate.Append(spawnGateSb);
-                obj["spawnGate"] = new JRaw(spawnGateSb.ToString());
+                obj["spawnGate"] = BossSpawnGate.Append();
             }
 
             // Backup-profile system. `bailed` is the one to watch: a flush refused by the in-flight guard

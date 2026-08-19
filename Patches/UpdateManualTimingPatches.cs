@@ -1,9 +1,8 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Reflection;
-using System.Text;
 using EFT;
 using HarmonyLib;
+using Newtonsoft.Json.Linq;
 using SPT.Reflection.Patching;
 
 namespace Ranger
@@ -142,30 +141,46 @@ namespace Ranger
             _deadCalls++;
         }
 
-        public static void Append(StringBuilder sb)
+        /// <summary>
+        /// JObject conversion (2026-08-19, part of the full sub-module pass following
+        /// Telemetry.cs's own Flush()/WriteHeader/WriteMark/EmitSpikeEvent conversion -
+        /// see those commits for the shared reasoning). Builds a real JObject rather than
+        /// a StringBuilder fragment; the caller in Telemetry.Flush() embeds this directly
+        /// as `obj["updateManual"] = UpdateManualTiming.AppendObj()` instead of capturing
+        /// StringBuilder output and wrapping it in JRaw.
+        /// </summary>
+        public static JObject AppendObj()
         {
-            sb.Append("{\"awakeMs\":").Append(Ms(_awakeTicks))
-              .Append(",\"awakeCalls\":").Append(_awakeCalls)
-              .Append(",\"pausedMs\":").Append(Ms(_pausedTicks))
-              .Append(",\"pausedCalls\":").Append(_pausedCalls)
-              .Append(",\"unstampedCalls\":").Append(_unstampedCalls)
-              .Append(",\"deadCalls\":").Append(_deadCalls)
-              .Append(",\"deadMs\":").Append(Ms(_deadTicks))
-              .Append(",\"awakeWorstCallMs\":").Append(Ms(_awakeWorstTicks))
-              .Append(",\"pausedWorstCallMs\":").Append(Ms(_pausedWorstTicks))
-              .Append('}');
+            JObject obj = new JObject();
+            obj["awakeMs"] = MsToken(_awakeTicks);
+            obj["awakeCalls"] = _awakeCalls;
+            obj["pausedMs"] = MsToken(_pausedTicks);
+            obj["pausedCalls"] = _pausedCalls;
+            obj["unstampedCalls"] = _unstampedCalls;
+            obj["deadCalls"] = _deadCalls;
+            obj["deadMs"] = MsToken(_deadTicks);
+            obj["awakeWorstCallMs"] = MsToken(_awakeWorstTicks);
+            obj["pausedWorstCallMs"] = MsToken(_pausedWorstTicks);
+            return obj;
         }
 
         /// <summary>
-        /// InvariantCulture is load-bearing, not tidiness: a comma-decimal
-        /// locale turns `"awakeMs":2.5` into `"awakeMs":2,5` and every window
-        /// in the file stops parsing. Telemetry.Fmt and RaidInit.F both
-        /// already do this; a third copy of that helper would cost more than
-        /// the one call each site makes.
+        /// JObject counterpart to the ticks-to-milliseconds conversion every Append method
+        /// in this codebase duplicated locally as a StringBuilder-facing Ms(long) - returns
+        /// a real JValue rather than a formatted string, same shape and same reasoning as
+        /// Telemetry.FmtToken (this file has no reference to that private method, so the
+        /// NaN/Infinity-to-null handling is duplicated here rather than shared - same
+        /// two-line guard, not worth a cross-file helper for one call site's parity).
         /// </summary>
-        private static string Ms(long ticks)
+        private static JToken MsToken(long ticks)
         {
-            return AiTiming.ToMs(ticks).ToString("0.###", CultureInfo.InvariantCulture);
+            double ms = AiTiming.ToMs(ticks);
+            if (double.IsNaN(ms) || double.IsInfinity(ms))
+            {
+                return JValue.CreateNull();
+            }
+
+            return new JValue(ms);
         }
 
         public static void ResetWindow()
