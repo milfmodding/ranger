@@ -9,11 +9,11 @@ using System.Threading;
 using Comfort.Common;
 using Diz.Jobs;
 using EFT;
-using Framesaver.Patches;
+using Ranger.Patches;
 using UnityEngine;
 using UnityEngine.Scripting;
 
-namespace Framesaver
+namespace Ranger
 {
     /// <summary>
     /// Samples once per frame and appends a newline-delimited JSON summary per window, plus one line per
@@ -55,8 +55,6 @@ namespace Framesaver
         private readonly Stat _playerLate = new Stat();
         private readonly Stat _playerTick = new Stat();
         private Stat[] _phases;
-        private float _nextLoopCheck;
-        private float _vanillaMaxDeltaTime;
 
         // Raw samples so the window can report percentiles. A fixed spike threshold turned out to be a poor
         // stutter metric: 16ms is 1.7x the mean on Customs but only 1.3x on Streets, so the same number means
@@ -343,7 +341,6 @@ namespace Framesaver
             string stamp = DateTime.Now.ToString(TimeFormat, CultureInfo.InvariantCulture);
             _path = Path.Combine(dir, "framesaver-" + stamp + (tag.Length > 0 ? "-" + tag : "") + ".ndjson");
 
-            _vanillaMaxDeltaTime = Time.maximumDeltaTime;
             StartWriter();
             WriteHeader();
             Plugin.LogSource.LogInfo("Framesaver telemetry -> " + _path);
@@ -469,30 +466,17 @@ namespace Framesaver
                 CurrentStateName = state.ToString().ToLowerInvariant();
             }
 
-            // Live-applied so it can be toggled mid-raid like the other experimental flags.
-            float wanted = Plugin.MaxDeltaTime.Value > 0f ? Plugin.MaxDeltaTime.Value : _vanillaMaxDeltaTime;
-            if (!Mathf.Approximately(Time.maximumDeltaTime, wanted))
-            {
-                Time.maximumDeltaTime = wanted;
-            }
-
-            ApplyJobSchedulerOverrides();
-            // GcControl.ApplyConfig()/.Drive() used to run here directly - now inside
-            // the per-frame callback Sample() invokes (TelemetryBus.
-            // InvokePerFrameCallbacks()), same frame, same effective ordering, since
-            // Sample() is called unconditionally right below.
+            // Capstone finding: MaxDeltaTime cap, ApplyJobSchedulerOverrides, and the
+            // player-loop profiler re-arm check used to run here directly - all three are
+            // genuine Framesaver behavioral levers (not measurement) that only shared this
+            // per-frame call site because it was the only one the mod had before Ranger
+            // existed. Extracted verbatim into Framesaver's own FrameLevers.cs, now driven
+            // through the same per-frame callback GcControl uses (RegisterPerFrameLevers,
+            // invoked below via InvokePerFrameCallbacks() inside Sample()). Nothing here
+            // reads Plugin.MaxDeltaTime/ProfilePlayerLoop/JobSchedulerBudgetMs/SlowFrames
+            // directly anymore - see Framesaver/FrameLevers.cs.
 
             Sample();
-
-            // The game rewrites the player loop during raid load; re-arm if our markers were dropped.
-            if (Time.realtimeSinceStartup >= _nextLoopCheck)
-            {
-                _nextLoopCheck = Time.realtimeSinceStartup + 5f;
-                if (Plugin.ProfilePlayerLoop.Value && !PlayerLoopProfiler.MarkersPresent())
-                {
-                    PlayerLoopProfiler.Install();
-                }
-            }
 
             // Before the ordinary roll below, so a press and a timed boundary in the same frame produce
             // one flush rather than two - the second would be an empty window.
@@ -541,36 +525,6 @@ namespace Framesaver
             {
                 Flush(false);
                 _nextWrite = Time.realtimeSinceStartup + Plugin.TelemetryWindow.Value;
-            }
-        }
-
-        /// <summary>
-        /// Applied live rather than at load, since JobScheduler is recreated per session and the game
-        /// rewrites FrameTicks whenever graphics settings change.
-        /// </summary>
-        private static void ApplyJobSchedulerOverrides()
-        {
-            if (!Singleton<JobScheduler>.Instantiated)
-            {
-                return;
-            }
-
-            JobScheduler js = Singleton<JobScheduler>.Instance;
-
-            float budget = Plugin.JobSchedulerBudgetMs.Value;
-            if (budget > 0f)
-            {
-                long ticks = (long)(budget * TimeSpan.TicksPerMillisecond);
-                if (js.FrameTicks != ticks)
-                {
-                    js.FrameTicks = ticks;
-                }
-            }
-
-            int slow = Plugin.JobSchedulerSlowFrames.Value;
-            if (slow >= 0 && js.SlowFrames != (byte)slow)
-            {
-                js.SlowFrames = (byte)slow;
             }
         }
 
@@ -1300,7 +1254,10 @@ namespace Framesaver
                 }
 
                 Num(sb, "heapDeltaMb", _lastHeapDeltaMb);
-                GcControl.AppendSpike(sb);
+                // Capstone finding: GcControl.AppendSpike read a Framesaver-only shipping
+                // class directly - routed through TelemetryBus.InvokeSpikeCallbacks, same
+                // registered-callback mechanism as header/window/mark.
+                TelemetryBus.InvokeSpikeCallbacks(sb);
             }
             // (gpuMs/presentWaitMs/vram spike fields used to append here; archived with the
             // GPU instruments 2026-08-17.)
@@ -1523,7 +1480,9 @@ namespace Framesaver
 
             GpuTelemetry.AppendWindow(sb);
             GpuTelemetry.AppendGraphicsConfig(sb);
-            GcControl.AppendWindow(sb);
+            // Capstone finding: GcControl.AppendWindow read a Framesaver-only shipping
+            // class directly - moved into CapstoneCallbacks.BuildWindow (via GcControl.
+            // AppendWindowTo), invoked below through InvokeWindowCallbacks(sb).
 
             // Capstone finding (2026-08-17/18): snipersAwake, bossGroups, bots.animCulled*,
             // agents.*, mods, and the tickedSum/liveSum pair all read the 9 shipping classes
@@ -1920,16 +1879,10 @@ namespace Framesaver
             sb.Append(",\"qpcFrequency\":").Append(GpuTelemetry.QpcFrequency());
             Num(sb, "spikeEventMs", Plugin.SpikeEventMs.Value);
 
-            // What was ASKED for. The state it produces is `agents.suppressSlicing` on every window,
-            // because that one cannot be read here: `ModCompat.SuppressSlicing` calls EnsureDetected,
-            // which latches `_detected` BEFORE probing, and this runs in Awake - so reading it here
-            // would freeze the detection against a plugin list BepInEx may not have finished filling,
-            // turn the guard off for the session, and leave no trace but different AI behaviour.
-            //
-            // Named `deferToAiMods` rather than `defer` because the drain budget already emits a
-            // `defer` counter, and a name that two fields answer to makes every future probe of it
-            // useless.
-            sb.Append(",\"deferToAiMods\":").Append(Plugin.DeferToOtherAiMods.Value ? "true" : "false");
+            // Capstone finding: deferToAiMods read Framesaver's Plugin.DeferToOtherAiMods
+            // directly - this field, along with the entire "config" block below, moved into
+            // Framesaver's registered header callback (CapstoneCallbacks.BuildHeader, invoked
+            // via InvokeHeaderCallbacks below, nested under "framesaver.ai.perf":{...}).
 
             // Which phases were actually expanded, resolved rather than as configured.
             //
@@ -1969,19 +1922,6 @@ namespace Framesaver
                 sb.Append("\"error\":\"").Append(Escape(e.GetType().Name)).Append('"');
             }
 
-            sb.Append('}');
-
-            sb.Append(",\"config\":{");
-            sb.Append("\"standByEnabled\":").Append(Bool(Plugin.StandByEnabled.Value));
-            Num(sb, "sleepDistance", Plugin.SleepDistance.Value);
-            Num(sb, "wakeDistance", Plugin.WakeDistance.Value);
-            Num(sb, "checkInterval", Plugin.CheckInterval.Value);
-            sb.Append(",\"keepFightingBotsAwake\":").Append(Bool(Plugin.KeepFightingBotsAwake.Value));
-            sb.Append(",\"sleepImmediately\":").Append(Bool(Plugin.SleepImmediately.Value));
-            sb.Append(",\"forceAllRoles\":").Append(Bool(Plugin.ForceStandByForAllRoles.Value));
-            sb.Append(",\"fixAgentLeak\":").Append(Bool(Plugin.FixAgentLeak.Value));
-            Num(sb, "brainUpdatePeriod", Plugin.BrainUpdatePeriod.Value);
-            sb.Append(",\"minBrainsPerFrame\":").Append(Plugin.MinBrainsPerFrame.Value);
             sb.Append('}');
 
             GpuTelemetry.AppendHeader(sb);
@@ -2162,7 +2102,11 @@ namespace Framesaver
             }
             // (GpuTelemetry.ResetWindow used to run here; nothing left to reset after the
             // instrument archive 2026-08-17.)
-            GcControl.ResetWindow();
+            // Capstone finding: GcControl.ResetWindow() zeroes a Framesaver-only shipping
+            // class's window-scoped counters directly - routed through TelemetryBus.
+            // InvokeWindowResetCallbacks, called at the same boundary this method zeroes
+            // its own accumulators.
+            TelemetryBus.InvokeWindowResetCallbacks();
             _heapMb.Reset();
             _gameUpdateSamples.Clear();
             _frameSamples.Clear();

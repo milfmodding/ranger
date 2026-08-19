@@ -177,6 +177,10 @@ namespace Ranger
             new Dictionary<string, Action>();
         private static readonly Dictionary<string, Action> _raidEndCallbacks =
             new Dictionary<string, Action>();
+        private static readonly Dictionary<string, Action<JObject>> _spikeCallbacks =
+            new Dictionary<string, Action<JObject>>();
+        private static readonly Dictionary<string, Action> _windowResetCallbacks =
+            new Dictionary<string, Action>();
 
         // Per-FRAME callback, added when the capstone move surfaced two more couplings that
         // are neither "append a fragment" nor "raid boundary": SleepingBotAnimatorPatch.
@@ -295,6 +299,35 @@ namespace Ranger
         }
 
         /// <summary>
+        /// Registers a callback invoked on every SPIKE line (a single slow frame, not a
+        /// window) - GcControl.AppendSpike is the concrete case this exists for (per-frame
+        /// GC-suspend diagnostics, only meaningful on a spike line that carries a
+        /// collection). Same JObject shape and per-guid nesting as the window/mark/header
+        /// callbacks; a registrant with nothing spike-shaped simply never calls this.
+        /// </summary>
+        public static void RegisterSpikeCallback(string modGuid, Action<JObject> callback)
+        {
+            if (string.IsNullOrEmpty(modGuid) || callback == null) return;
+            _spikeCallbacks[modGuid] = callback;
+        }
+
+        /// <summary>
+        /// Registers a callback invoked once per WINDOW RESET (the boundary where a window's
+        /// accumulators are zeroed for the next one, distinct from RegisterWindowCallback
+        /// which CONTRIBUTES that window's own NDJSON fragment). GcControl.ResetWindow is the
+        /// concrete case - its drive-call/pending/msTotal/msMax counters are window-scoped
+        /// and must zero at the same boundary Telemetry.cs's own window accumulators do, or
+        /// they silently carry over and every subsequent window's gcDrive block double-counts.
+        /// Bare Action, no StringBuilder/JObject - this is a lifecycle hook like raid-start/end,
+        /// not a line contributor.
+        /// </summary>
+        public static void RegisterWindowResetCallback(string modGuid, Action callback)
+        {
+            if (string.IsNullOrEmpty(modGuid) || callback == null) return;
+            _windowResetCallbacks[modGuid] = callback;
+        }
+
+        /// <summary>
         /// Registers a callback invoked once EVERY FRAME, from the sampler's own Sample() -
         /// for state that must be driven or reset every frame rather than contributing an
         /// NDJSON fragment (SleepingBotAnimatorPatch.ReadAndReset, GcControl's ApplyConfig/
@@ -398,6 +431,18 @@ namespace Ranger
         internal static void InvokePerFrameCallbacks()
         {
             InvokeAll(_perFrameCallbacks);
+        }
+
+        /// <summary>Invokes every registered spike callback. Same skip-on-throw posture as <see cref="InvokeWindowCallbacks"/> - called from a spike line's own write point, not every window.</summary>
+        internal static void InvokeSpikeCallbacks(StringBuilder sb)
+        {
+            SpliceFields(sb, InvokeAll(_spikeCallbacks));
+        }
+
+        /// <summary>Invokes every registered window-reset callback. Same posture as <see cref="InvokeRaidStartCallbacks"/> - called at the same boundary Telemetry.cs zeroes its own window accumulators, so a registrant's window-scoped counters (GcControl's drive stats) reset in step rather than carrying over.</summary>
+        internal static void InvokeWindowResetCallbacks()
+        {
+            InvokeAll(_windowResetCallbacks);
         }
 
         // JObject version (2026-08-18): each registrant gets its own JObject to fill in,
