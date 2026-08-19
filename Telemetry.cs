@@ -194,47 +194,6 @@ namespace Ranger
             return true;
         }
 
-        /// <summary>
-        /// Emits the raid clock as both seconds and the HH:MM:SS remaining figure the O key shows, so a
-        /// reported "it stuttered around 22 minutes left" maps straight onto a line without arithmetic.
-        /// </summary>
-        /// <summary>
-        /// Stamps every line with which raid and which map it came from. Instance method rather than static
-        /// because both values are per-session state; kept next to the clock writer since they are always
-        /// emitted together.
-        /// </summary>
-        private void AppendRaidIdentity(StringBuilder sb)
-        {
-            sb.Append(",\"raid\":").Append(_raid);
-            sb.Append(",\"map\":\"").Append(Escape(_map)).Append('"');
-        }
-
-        private static void AppendRaidClock(StringBuilder sb)
-        {
-            double elapsed, remaining;
-            if (!TryGetRaidClock(out elapsed, out remaining))
-            {
-                return;
-            }
-
-            sb.Append(",\"raidElapsed\":").Append(Fmt(elapsed))
-              .Append(",\"raidLeft\":").Append(Fmt(remaining))
-              .Append(",\"raidClock\":\"").Append(Clock(remaining)).Append('"');
-        }
-
-        private static string Clock(double seconds)
-        {
-            bool negative = seconds < 0d;
-            if (negative)
-            {
-                seconds = -seconds;
-            }
-
-            int total = (int)seconds;
-            return (negative ? "-" : "") + (total / 3600).ToString("00", CultureInfo.InvariantCulture)
-                   + ":" + (total / 60 % 60).ToString("00", CultureInfo.InvariantCulture)
-                   + ":" + (total % 60).ToString("00", CultureInfo.InvariantCulture);
-        }
 
         private string _path;
         private SessionState _state = SessionState.Menu;
@@ -658,55 +617,6 @@ namespace Ranger
             return degrees;
         }
 
-        /// <summary>
-        /// Emits the window's movement, or explicit nulls when no player was ever sampled - a teardown
-        /// window must be visibly a teardown window rather than a gap.
-        /// </summary>
-        private void AppendPosition(StringBuilder sb)
-        {
-            if (_posSamples == 0)
-            {
-                sb.Append(",\"pos\":{\"dist\":null,\"samples\":0}");
-                return;
-            }
-
-            sb.Append(",\"pos\":{\"dist\":").Append(Fmt(_distance));
-            sb.Append(",\"samples\":").Append(_posSamples);
-            sb.Append(",\"x\":[").Append(Fmt(_posMin.x)).Append(',').Append(Fmt(_posMax.x)).Append(']');
-            sb.Append(",\"y\":[").Append(Fmt(_posMin.y)).Append(',').Append(Fmt(_posMax.y)).Append(']');
-            sb.Append(",\"z\":[").Append(Fmt(_posMin.z)).Append(',').Append(Fmt(_posMax.z)).Append(']');
-            sb.Append(",\"end\":[").Append(Fmt(_lastPos.x)).Append(',').Append(Fmt(_lastPos.y))
-              .Append(',').Append(Fmt(_lastPos.z)).Append(']');
-            AppendLook(sb);
-            sb.Append('}');
-        }
-
-        /// <summary>
-        /// The look block, nested in `pos`.
-        ///
-        /// **Null, never zero, when nothing was sampled.** A held view and a field that failed to read
-        /// both produce zero variance, and the whole point of this block is to certify a held view - so
-        /// the two must not be spelled the same. That is the `proc` precedent, which published zeros for
-        /// a day that meant "could not read".
-        ///
-        /// `range` is [min, max] of the unwrapped angle relative to the first sample of the window, so
-        /// max - min is angular extent in degrees. `swept` is total absolute change.
-        /// </summary>
-        private void AppendLook(StringBuilder sb)
-        {
-            if (_lookSamples == 0)
-            {
-                sb.Append(",\"look\":null");
-                return;
-            }
-
-            sb.Append(",\"look\":{\"samples\":").Append(_lookSamples);
-            sb.Append(",\"yaw\":{\"range\":[").Append(Fmt(_yawMin)).Append(',').Append(Fmt(_yawMax))
-              .Append("],\"swept\":").Append(Fmt(_yawSwept)).Append('}');
-            sb.Append(",\"pitch\":{\"range\":[").Append(Fmt(_pitchMin)).Append(',').Append(Fmt(_pitchMax))
-              .Append("],\"swept\":").Append(Fmt(_pitchSwept)).Append('}');
-            sb.Append('}');
-        }
 
         /// <summary>
         /// Process memory, once per window.
@@ -728,64 +638,6 @@ namespace Ranger
         /// only because the same quantity had been measured externally an hour earlier - so the zero
         /// guard below is the instrument, not padding around it.
         /// </summary>
-        private void AppendProc(StringBuilder sb)
-        {
-            ProcessMemoryCountersEx c = default(ProcessMemoryCountersEx);
-            bool ok;
-
-            try
-            {
-                ok = GetProcessMemoryInfo(GetCurrentProcess(), out c,
-                                          (uint)Marshal.SizeOf(typeof(ProcessMemoryCountersEx)));
-            }
-            catch (Exception)
-            {
-                // DllNotFound / EntryPointNotFound - the call never happened at all.
-                sb.Append(",\"proc\":{\"err\":\"pinvoke\"}");
-                return;
-            }
-
-            long ws = ok ? (long)c.WorkingSetSize.ToUInt64() : 0L;
-            long priv = ok ? (long)c.PrivateUsage.ToUInt64() : 0L;
-
-            if (!ok || ws == 0L || priv == 0L)
-            {
-                // A running process cannot have a zero working set. Emitting the zeros is exactly
-                // what made the previous implementation read as a measurement for a whole day.
-                sb.Append(",\"proc\":{\"err\":\"").Append(ok ? "zero" : "call").Append("\"}");
-                return;
-            }
-
-            // Signed before subtracting: WorkingSetSize counts shared pages that PrivateUsage does
-            // not, so working set legitimately exceeds commit and an unsigned difference wraps.
-            long faults = c.PageFaultCount;
-
-            sb.Append(",\"proc\":{\"wsMb\":").Append(ws / 1048576L);
-            sb.Append(",\"privMb\":").Append(priv / 1048576L);
-            sb.Append(",\"notResidentMb\":").Append((priv - ws) / 1048576L);
-            sb.Append(",\"faults\":").Append(faults);
-
-            if (_hasProcBaseline)
-            {
-                sb.Append(",\"wsDeltaMb\":").Append((ws - _lastWs) / 1048576L);
-                sb.Append(",\"privDeltaMb\":").Append((priv - _lastPriv) / 1048576L);
-                sb.Append(",\"faultsDelta\":").Append(faults - _lastFaults);
-            }
-            else
-            {
-                // null, not 0, on the first window. "No baseline yet" and "nothing moved" are
-                // different readings; the previous implementation reported both as 0.
-                sb.Append(",\"wsDeltaMb\":null,\"privDeltaMb\":null,\"faultsDelta\":null");
-            }
-
-            sb.Append('}');
-
-            _lastWs = ws;
-            _lastPriv = priv;
-            _lastFaults = faults;
-            _hasProcBaseline = true;
-        }
-
         /// <summary>
         /// PROCESS_MEMORY_COUNTERS_EX. PrivateUsage is the process commit charge - Task Manager's
         /// "Commit size", and the field carrying the 31.2 GB figure. It exists only in the EX form,
@@ -1263,38 +1115,6 @@ namespace Ranger
             // (gpuMs/presentWaitMs/vram spike fields used to append here; archived with the
             // GPU instruments 2026-08-17.)
             Append(obj.ToString(Formatting.None));
-        }
-
-        private static void AppendPercentiles(StringBuilder sb, string name, List<double> samples)
-        {
-            if (samples.Count == 0)
-            {
-                return;
-            }
-
-            // p75 added 2026-07-30, when the gate moved to p75 primary with
-            // a p99 guard. Purely additive: p50/p95/p99/p999 keep their exact
-            // meanings, so every window ever logged stays comparable on them.
-            // Before this the gate's own number was reconstructible only from
-            // a PresentMon capture, and six of nine maps have telemetry with
-            // no capture at all.
-            //
-            // These are frame TIMES. p75 of frame time is p25 of fps - the
-            // stricter-than-typical end, which is what a gate wants.
-            //
-            // DO NOT RECONCILE against analysis/alpha-fps-percentiles.py. It
-            // reads PresentMon frames with a linear-interpolated percentile;
-            // this is nearest-rank over BSG's measurer. Different source AND
-            // different estimator, so they are two instruments: a gap between
-            // them is expected rather than an error to explain away. The
-            // three maps carrying both are where that gap gets measured,
-            // before this number is trusted on the six that cannot check it.
-            samples.Sort();
-            sb.Append(",\"").Append(name).Append("\":{\"p50\":").Append(Fmt(Percentile(samples, 0.50)))
-              .Append(",\"p75\":").Append(Fmt(Percentile(samples, 0.75)))
-              .Append(",\"p95\":").Append(Fmt(Percentile(samples, 0.95)))
-              .Append(",\"p99\":").Append(Fmt(Percentile(samples, 0.99)))
-              .Append(",\"p999\":").Append(Fmt(Percentile(samples, 0.999))).Append('}');
         }
 
         private static double Percentile(List<double> sorted, double fraction)
@@ -2049,15 +1869,21 @@ namespace Ranger
             string body;
             while (Census.TryTakeLine(out body))
             {
-                StringBuilder sb = new StringBuilder(body.Length + 256);
-                sb.Append("{\"type\":\"census\"");
-                AppendRaidIdentity(sb);
-                sb.Append(",\"state\":\"").Append(_state.ToString().ToLowerInvariant()).Append('"');
-                sb.Append(",\"t\":").Append(Fmt(Time.realtimeSinceStartup - _sampleStart));
-                sb.Append(",\"qpc\":").Append(GpuTelemetry.Qpc());
-                sb.Append(',').Append(body);
-                sb.Append('}');
-                Append(sb.ToString());
+                // `body` is Census's own pre-built raw JSON fragment - a bare comma-separated
+                // key:value run with NO surrounding braces and NO leading comma (e.g.
+                // `"sample":"dead10","error":"..."`), which is why the old StringBuilder path
+                // could just Append(',').Append(body) directly. SpliceRawFields expects the
+                // comma-FIRST shape every other AppendX fragment in this file uses, so the
+                // leading comma is added here before handing it in - the content itself is
+                // unchanged, still embedded verbatim via JRaw rather than re-parsed field by field.
+                JObject obj = new JObject();
+                obj["type"] = "census";
+                AppendRaidIdentityObj(obj);
+                obj["state"] = _state.ToString().ToLowerInvariant();
+                obj["t"] = FmtToken(Time.realtimeSinceStartup - _sampleStart);
+                obj["qpc"] = GpuTelemetry.Qpc();
+                SpliceRawFields(obj, "," + body);
+                Append(obj.ToString(Formatting.None));
             }
         }
 
@@ -2244,6 +2070,25 @@ namespace Ranger
         }
 
         /// <summary>
+        /// HH:MM:SS remaining, matching the readout the O key shows. Restored here (moved rather
+        /// than deleted) after the StringBuilder-only AppendRaidClock that used to own this call was
+        /// removed as dead code once AppendRaidClockObj took over every call site.
+        /// </summary>
+        private static string Clock(double seconds)
+        {
+            bool negative = seconds < 0d;
+            if (negative)
+            {
+                seconds = -seconds;
+            }
+
+            int total = (int)seconds;
+            return (negative ? "-" : "") + (total / 3600).ToString("00", CultureInfo.InvariantCulture)
+                   + ":" + (total / 60 % 60).ToString("00", CultureInfo.InvariantCulture)
+                   + ":" + (total % 60).ToString("00", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
         /// JObject counterpart to <see cref="AppendPosition(StringBuilder)"/>. Same null-vs-populated
         /// shape: `pos.dist` is null with `samples:0` when nothing was ever sampled, never a zero that
         /// could be mistaken for a held position.
@@ -2405,15 +2250,9 @@ namespace Ranger
             }
         }
 
-        private static void Block(StringBuilder sb, string name, Stat s)
-        {
-            sb.Append(",\"").Append(name).Append("\":{\"avg\":").Append(Fmt(s.Average))
-              .Append(",\"min\":").Append(Fmt(s.Min))
-              .Append(",\"max\":").Append(Fmt(s.Max)).Append('}');
-        }
-
         /// <summary>
-        /// JObject counterpart to <see cref="Block(StringBuilder, string, Stat)"/>, same three fields.
+        /// JObject counterpart to the retired StringBuilder-only Block helper (removed as dead code
+        /// once BlockObj took over every call site), same three fields.
         /// Fmt already returns "null" as a STRING for NaN/Infinity, which is correct for the
         /// StringBuilder path (it is spliced verbatim into JSON text) but wrong here - JObject would
         /// serialize a C# string "null" as the four characters "null" WITH quotes around it
@@ -2428,16 +2267,6 @@ namespace Ranger
             obj["min"] = FmtToken(s.Min);
             obj["max"] = FmtToken(s.Max);
             return obj;
-        }
-
-        private static void Num(StringBuilder sb, string name, double value)
-        {
-            sb.Append(",\"").Append(name).Append("\":").Append(Fmt(value));
-        }
-
-        private static string Bool(bool value)
-        {
-            return value ? "true" : "false";
         }
 
         /// <summary>Invariant culture matters: a comma decimal separator would emit invalid JSON.</summary>
