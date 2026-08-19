@@ -1358,17 +1358,24 @@ namespace Ranger
             // alone this pass - see this method's own doc comment). Both calls append onto ONE shared
             // StringBuilder, so they are captured together and spliced as two independent JRaw
             // fragments by reading the object back out and pulling its properties across - simpler:
-            // wrap each call's own delta in its own StringBuilder instead, since AppendWindow/
-            // AppendGraphicsConfig each only ever emit one top-level key of their own
-            // ("gfxSettings"/"gfx" nested inside... no - re-checked, each emits ",\"key\":{...}" at
-            // the TOP level of the object being built, same shape as every other AppendX call here).
-            StringBuilder gpuWindowSb = new StringBuilder(256);
-            GpuTelemetry.AppendWindow(gpuWindowSb);
-            SpliceRawFields(obj, gpuWindowSb.ToString());
+            // GpuTelemetry.cs converted to JObject (2026-08-19, Tau's slice, last of the sub-module
+            // pass) - AppendWindow/AppendGraphicsConfig now return a JObject directly instead of
+            // appending to a shared StringBuilder, so their fields merge into `obj` natively rather
+            // than through the SpliceRawFields/JRaw round-trip every other still-StringBuilder
+            // sub-module needs. AppendWindow only ever populates "gfxSettings" (once per session);
+            // AppendGraphicsConfig always populates "gfx" (every window) - both merge cleanly since
+            // they write disjoint top-level keys.
+            JObject gpuWindow = GpuTelemetry.AppendWindow();
+            foreach (JProperty prop in gpuWindow.Properties())
+            {
+                obj[prop.Name] = prop.Value;
+            }
 
-            StringBuilder gpuGfxSb = new StringBuilder(256);
-            GpuTelemetry.AppendGraphicsConfig(gpuGfxSb);
-            SpliceRawFields(obj, gpuGfxSb.ToString());
+            JObject gpuGfx = GpuTelemetry.AppendGraphicsConfig();
+            foreach (JProperty prop in gpuGfx.Properties())
+            {
+                obj[prop.Name] = prop.Value;
+            }
             // Capstone finding: GcControl.AppendWindow read a Framesaver-only shipping
             // class directly - moved into CapstoneCallbacks.BuildWindow (via GcControl.
             // AppendWindowTo), invoked below through InvokeWindowCallbacks(obj).
@@ -1838,9 +1845,14 @@ namespace Ranger
 
             obj["gcRuntime"] = gcRuntime;
 
-            StringBuilder gpuHeaderSb = new StringBuilder(256);
-            GpuTelemetry.AppendHeader(gpuHeaderSb);
-            SpliceRawFields(obj, gpuHeaderSb.ToString());
+            // GpuTelemetry.cs converted to JObject (2026-08-19, Tau's slice) - AppendHeader now
+            // returns a JObject directly, merged natively same as Flush()'s AppendWindow/
+            // AppendGraphicsConfig calls.
+            JObject gpuHeader = GpuTelemetry.AppendHeader();
+            foreach (JProperty prop in gpuHeader.Properties())
+            {
+                obj[prop.Name] = prop.Value;
+            }
 
             StringBuilder headerCallbackSb = new StringBuilder(256);
             TelemetryBus.InvokeHeaderCallbacks(headerCallbackSb);

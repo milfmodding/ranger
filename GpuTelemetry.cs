@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using Comfort.Common;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace Ranger
@@ -118,41 +119,52 @@ namespace Ranger
         // ---- graphics config context (survived the split) -----------------------------------
 
         /// <summary>
-        /// Wraps an append body so a failure in graphics-config reading cannot corrupt the line it is
-        /// embedded in - an unterminated quote from a settings read would swallow every field after it.
+        /// JObject conversion (2026-08-19, sub-module pass): wraps a build body so a failure in
+        /// graphics-config reading cannot corrupt the line it contributes to - the original
+        /// StringBuilder version had to protect against an unterminated quote swallowing every
+        /// field after it; a JObject cannot half-write in the same way, but a thrown exception mid-
+        /// build would still lose the whole fragment, so the same try/catch-and-report shape is
+        /// kept for continuity of behaviour (gfxErr appears on the returned object, not spliced into
+        /// a shared buffer).
         /// </summary>
-        private static void Guarded(StringBuilder sb, Action<StringBuilder> body, string where)
+        private static JObject Guarded(Func<JObject> body, string where)
         {
-            int before = sb.Length;
             try
             {
-                body(sb);
+                return body();
             }
             catch (Exception e)
             {
-                sb.Length = before;
-                sb.Append(",\"gfxErr\":\"").Append(Escape(e.GetType().Name)).Append('"');
                 Plugin.LogSource.LogWarning("Ranger: " + where + " failed - " + e.Message);
+                JObject err = new JObject();
+                err["gfxErr"] = e.GetType().Name;
+                return err;
             }
         }
 
-        private static readonly Action<StringBuilder> WindowBody = AppendWindowCore;
-        private static readonly Action<StringBuilder> GraphicsBody = AppendGraphicsConfigCore;
-        private static readonly Action<StringBuilder> HeaderBody = AppendHeaderCore;
+        private static readonly Func<JObject> WindowBody = AppendWindowCore;
+        private static readonly Func<JObject> GraphicsBody = AppendGraphicsConfigCore;
+        private static readonly Func<JObject> HeaderBody = AppendHeaderCore;
 
         /// <summary>
         /// Per-window append point. Since the split this carries ONLY the once-per-session gfxSettings
         /// dump (first window line where the settings singleton exists); the gpu instrument block that
-        /// used to live here is archived with the instruments.
+        /// used to live here is archived with the instruments. Returns a JObject whose OWN FIELDS are
+        /// meant to be merged into the caller's window object (matching every other Append* method's
+        /// comma-first-fragment convention, now expressed as "the returned object's top-level keys"
+        /// instead of raw text) - an empty JObject when nothing was dumped this call, same as the
+        /// StringBuilder version appending nothing.
         /// </summary>
-        internal static void AppendWindow(StringBuilder sb)
+        internal static JObject AppendWindow()
         {
-            Guarded(sb, WindowBody, "AppendWindow");
+            return Guarded(WindowBody, "AppendWindow");
         }
 
-        private static void AppendWindowCore(StringBuilder sb)
+        private static JObject AppendWindowCore()
         {
-            AppendSettingsDumpOnce(sb);
+            JObject obj = new JObject();
+            AppendSettingsDumpOnce(obj);
+            return obj;
         }
 
         private static bool _settingsDumped;
@@ -160,9 +172,12 @@ namespace Ranger
         /// <summary>
         /// The full graphics dump, emitted once on the first window line where the settings singleton exists.
         /// Everything here is either immutable for the session or too verbose to repeat per line; the mutable
-        /// subset that matters lives in AppendGraphicsConfig and goes on every line.
+        /// subset that matters lives in AppendGraphicsConfig and goes on every line. JObject counterpart:
+        /// merges "gfxSettings" into the caller's object exactly once (guarded by the same _settingsDumped
+        /// latch as before), and leaves it absent entirely on every call before that - never a null or
+        /// empty placeholder key, since "not dumped yet" and "dumped as empty" are different facts.
         /// </summary>
-        private static void AppendSettingsDumpOnce(StringBuilder sb)
+        private static void AppendSettingsDumpOnce(JObject obj)
         {
             if (_settingsDumped)
             {
@@ -186,32 +201,33 @@ namespace Ranger
 
             _settingsDumped = true;
 
-            sb.Append(",\"gfxSettings\":{");
+            JObject gfxSettings = new JObject();
             try
             {
                 EFT.Settings.Graphics.GraphicsSettingsGroup g = probe;
                 {
-                    sb.Append("\"textureQuality\":").Append(g.TextureQuality.Value);
-                    sb.Append(",\"mipStreaming\":").Append(g.MipStreaming.Value ? "true" : "false");
-                    sb.Append(",\"mipStreamingBufferSize\":").Append(g.MipStreamingBufferSize.Value);
-                    sb.Append(",\"shadowsQuality\":").Append(g.ShadowsQuality.Value);
+                    gfxSettings["textureQuality"] = g.TextureQuality.Value;
+                    gfxSettings["mipStreaming"] = g.MipStreaming.Value;
+                    gfxSettings["mipStreamingBufferSize"] = g.MipStreamingBufferSize.Value;
+                    gfxSettings["shadowsQuality"] = g.ShadowsQuality.Value;
                     // ShadowDistance and SuperSamplingFactor are plain derived properties on the settings
                     // object, not GameSetting<T> bindables like the rest.
-                    sb.Append(",\"shadowDistance\":").Append(Fmt(g.ShadowDistance));
-                    sb.Append(",\"overallVisibility\":").Append(Fmt(g.OverallVisibility.Value));
-                    sb.Append(",\"lodBias\":").Append(Fmt(g.LodBias.Value));
-                    sb.Append(",\"superSamplingFactor\":").Append(Fmt(g.SuperSamplingFactor));
-                    sb.Append(",\"vSync\":").Append(g.VSync.Value ? "true" : "false");
-                    sb.Append(",\"gameFramerate\":").Append(g.GameFramerate.Value);
-                    sb.Append(",\"reflex\":\"").Append(g.NVidiaReflex.Value).Append('"');
+                    gfxSettings["shadowDistance"] = FmtToken(g.ShadowDistance);
+                    gfxSettings["overallVisibility"] = FmtToken(g.OverallVisibility.Value);
+                    gfxSettings["lodBias"] = FmtToken(g.LodBias.Value);
+                    gfxSettings["superSamplingFactor"] = FmtToken(g.SuperSamplingFactor);
+                    gfxSettings["vSync"] = g.VSync.Value;
+                    gfxSettings["gameFramerate"] = g.GameFramerate.Value;
+                    gfxSettings["reflex"] = g.NVidiaReflex.Value.ToString();
                 }
             }
             catch (Exception e)
             {
-                sb.Append("\"error\":\"").Append(Escape(e.GetType().Name + ": " + e.Message)).Append('"');
+                gfxSettings = new JObject();
+                gfxSettings["error"] = e.GetType().Name + ": " + e.Message;
             }
 
-            sb.Append('}');
+            obj["gfxSettings"] = gfxSettings;
         }
 
         // Deliberately not probed: GClass3692.IsReflexAvailable(). It looks like a free capability query and is
@@ -224,17 +240,19 @@ namespace Ranger
         /// Graphics state on every window line. These are not our config, but they change what every other
         /// number in the file means, and EFT's settings are editable mid-session from the graphics tab - so a
         /// header written at load can lie about them. Reflex in particular rewrites targetFrameRate and
-        /// vSyncCount when it is switched on.
+        /// vSyncCount when it is switched on. Returns a JObject whose "gfx" field is meant to be merged into
+        /// the caller's window object, same convention as AppendWindow.
         /// </summary>
-        internal static void AppendGraphicsConfig(StringBuilder sb)
+        internal static JObject AppendGraphicsConfig()
         {
-            Guarded(sb, GraphicsBody, "AppendGraphicsConfig");
+            return Guarded(GraphicsBody, "AppendGraphicsConfig");
         }
 
-        private static void AppendGraphicsConfigCore(StringBuilder sb)
+        private static JObject AppendGraphicsConfigCore()
         {
-            sb.Append(",\"gfx\":{");
-            sb.Append("\"screen\":\"").Append(Screen.width).Append('x').Append(Screen.height).Append('"');
+            JObject obj = new JObject();
+            JObject gfx = new JObject();
+            gfx["screen"] = Screen.width + "x" + Screen.height;
 
             // Internal render resolution, which is what the GPU actually shades. With FSR3 Balanced this is
             // 0.588x per axis, so it is roughly a third of the pixels the screen resolution implies - and
@@ -245,7 +263,7 @@ namespace Ranger
                 Camera cam = EFT.CameraControl.CameraManager.Exist ? EFT.CameraControl.CameraManager.Instance.Camera : null;
                 if (cam != null)
                 {
-                    sb.Append(",\"render\":\"").Append(cam.pixelWidth).Append('x').Append(cam.pixelHeight).Append('"');
+                    gfx["render"] = cam.pixelWidth + "x" + cam.pixelHeight;
                 }
             }
             catch (Exception)
@@ -253,23 +271,23 @@ namespace Ranger
                 // Camera rig not up yet; the screen resolution above is still worth having.
             }
 
-            sb.Append(",\"vSyncCount\":").Append(QualitySettings.vSyncCount);
-            sb.Append(",\"targetFps\":").Append(Application.targetFrameRate);
-            sb.Append(",\"mipLimit\":").Append(QualitySettings.globalTextureMipmapLimit);
-            sb.Append(",\"lodBias\":").Append(Fmt(QualitySettings.lodBias));
+            gfx["vSyncCount"] = QualitySettings.vSyncCount;
+            gfx["targetFps"] = Application.targetFrameRate;
+            gfx["mipLimit"] = QualitySettings.globalTextureMipmapLimit;
+            gfx["lodBias"] = FmtToken(QualitySettings.lodBias);
 
             try
             {
                 EFT.Settings.Graphics.GraphicsSettingsGroup g = GraphicsSettings();
                 if (g != null)
                 {
-                    sb.Append(",\"reflex\":\"").Append(g.NVidiaReflex.Value).Append('"');
-                    sb.Append(",\"textureQuality\":").Append(g.TextureQuality.Value);
-                    sb.Append(",\"mipStreaming\":").Append(g.MipStreaming.Value ? "true" : "false");
-                    sb.Append(",\"dlss\":\"").Append(g.DLSSMode.Value).Append('"');
-                    sb.Append(",\"fsr2\":\"").Append(g.FSR2Mode.Value).Append('"');
-                    sb.Append(",\"fsr3\":\"").Append(g.FSR3Mode.Value).Append('"');
-                    sb.Append(",\"aa\":\"").Append(g.AntiAliasing.Value).Append('"');
+                    gfx["reflex"] = g.NVidiaReflex.Value.ToString();
+                    gfx["textureQuality"] = g.TextureQuality.Value;
+                    gfx["mipStreaming"] = g.MipStreaming.Value;
+                    gfx["dlss"] = g.DLSSMode.Value.ToString();
+                    gfx["fsr2"] = g.FSR2Mode.Value.ToString();
+                    gfx["fsr3"] = g.FSR3Mode.Value.ToString();
+                    gfx["aa"] = g.AntiAliasing.Value.ToString();
                 }
             }
             catch (Exception)
@@ -278,30 +296,35 @@ namespace Ranger
                 // and are always valid, so a partial block beats no block.
             }
 
-            sb.Append('}');
+            obj["gfx"] = gfx;
+            return obj;
         }
 
         /// <summary>
         /// Device identity for the header. Immutable for the session, so once per file is enough.
+        /// Returns a JObject whose "gpuDevice" field is meant to be merged into the caller's header
+        /// object, same convention as AppendWindow/AppendGraphicsConfig.
         /// </summary>
-        internal static void AppendHeader(StringBuilder sb)
+        internal static JObject AppendHeader()
         {
-            Guarded(sb, HeaderBody, "AppendHeader");
+            return Guarded(HeaderBody, "AppendHeader");
         }
 
-        private static void AppendHeaderCore(StringBuilder sb)
+        private static JObject AppendHeaderCore()
         {
-            sb.Append(",\"gpuDevice\":{");
-            sb.Append("\"name\":\"").Append(Escape(SystemInfo.graphicsDeviceName)).Append('"');
-            sb.Append(",\"api\":\"").Append(Escape(SystemInfo.graphicsDeviceType.ToString())).Append('"');
-            sb.Append(",\"driver\":\"").Append(Escape(SystemInfo.graphicsDeviceVersion)).Append('"');
-            sb.Append(",\"vramMb\":").Append(SystemInfo.graphicsMemorySize);
-            sb.Append(",\"multiThreaded\":").Append(SystemInfo.graphicsMultiThreaded ? "true" : "false");
-            sb.Append('}');
+            JObject obj = new JObject();
+            JObject gpuDevice = new JObject();
+            gpuDevice["name"] = SystemInfo.graphicsDeviceName ?? "";
+            gpuDevice["api"] = SystemInfo.graphicsDeviceType.ToString();
+            gpuDevice["driver"] = SystemInfo.graphicsDeviceVersion ?? "";
+            gpuDevice["vramMb"] = SystemInfo.graphicsMemorySize;
+            gpuDevice["multiThreaded"] = SystemInfo.graphicsMultiThreaded;
+            obj["gpuDevice"] = gpuDevice;
 
             // Deliberately not the graphics settings: the settings singleton does not exist yet at plugin load,
             // so a dump written here says only "not instantiated". AppendSettingsDumpOnce puts it on the first
             // window line that can actually resolve it.
+            return obj;
         }
 
         private static EFT.Settings.Graphics.GraphicsSettingsGroup GraphicsSettings()
@@ -320,19 +343,22 @@ namespace Ranger
             return shared != null && shared.Graphics != null ? shared.Graphics.Settings : null;
         }
 
-        private static string Fmt(double value)
+        /// <summary>
+        /// JObject counterpart to the retired StringBuilder-facing Fmt(double) - same shape as
+        /// Telemetry.FmtToken, duplicated here rather than shared for the same reason every other
+        /// JObject-building file in this codebase duplicates it: no shared numeric-formatting base
+        /// class exists, and one is not worth introducing for a single static method. Returns a
+        /// real JValue rather than a string, so NaN/Infinity become the bare JSON token null instead
+        /// of the quoted string "null".
+        /// </summary>
+        private static JToken FmtToken(double value)
         {
             if (double.IsNaN(value) || double.IsInfinity(value))
             {
-                return "null";
+                return JValue.CreateNull();
             }
 
-            return value.ToString("0.###", CultureInfo.InvariantCulture);
-        }
-
-        private static string Escape(string value)
-        {
-            return string.IsNullOrEmpty(value) ? "" : value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            return new JValue(value);
         }
     }
 }
