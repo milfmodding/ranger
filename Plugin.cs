@@ -72,6 +72,7 @@ namespace Ranger
         // ---- Telemetry config ---------------------------------------------------------------
         public static ConfigEntry<bool> TelemetryEnabled;
         public static ConfigEntry<string> RunTag;
+        public static ConfigEntry<string> InstallId;
         public static ConfigEntry<BepInEx.Configuration.KeyboardShortcut> ProtocolKey;
         public static ConfigEntry<bool> ProtocolAutoStart;
         public static ConfigEntry<BepInEx.Configuration.KeyboardShortcut> MarkKey;
@@ -103,6 +104,29 @@ namespace Ranger
                 "the tag to find its data. Per-run label - set it per run, leave empty for none. " +
                 "(The default was briefly the cutover-verification tag; Tau's nit - a label must " +
                 "not have an opinion about what run it is.)");
+
+            // Generated ONCE, on this install's first boot, then read (never regenerated) on
+            // every boot after - the opposite lifecycle from RunTag above, which the user sets
+            // fresh each run. Sophia's ask (2026-08-20 16:12Z): a stable per-install identifier
+            // so multiple runs from the same tester can be told apart from runs by someone else,
+            // which RunTag alone cannot do (two testers can easily leave it at the same default,
+            // or pick the same label independently, and it is not unique by construction).
+            //
+            // Config.Bind's own default only applies the FIRST time a key is written - once
+            // BepInEx has persisted a value to the .cfg file, every later Bind call for the same
+            // section+key returns what is on disk, not this default. So a fresh Guid literal
+            // baked in here would not regenerate on every boot; it is captured by this specific
+            // Bind call and then this Awake() never runs again against the same on-disk value
+            // without going through this exact code path. Written out explicitly rather than
+            // left implicit, because "why does this look like it changes every build" is a
+            // reasonable question for whoever reads this next.
+            InstallId = Config.Bind(
+                "Telemetry", "Install id", Guid.NewGuid().ToString(),
+                "A random identifier generated once when Ranger is first installed, then kept " +
+                "unchanged on every later boot. Stamped into every header alongside the per-run " +
+                "id, so runs from the same install can be grouped even across different Run tag " +
+                "labels. Not tied to hardware or any personal identifier - delete this line from " +
+                "the .cfg file to get a fresh one.");
 
             ProtocolKey = Config.Bind(
                 "Telemetry", "Protocol step key",

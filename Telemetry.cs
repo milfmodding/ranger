@@ -1798,6 +1798,16 @@ namespace Ranger
             // moved into Framesaver's registered header callback (nested under
             // "framesaver.ai.perf":{...} by InvokeHeaderCallbacks below).
             obj["tag"] = Plugin.RunTag.Value ?? "";
+            // Sophia's ask (2026-08-20 16:12Z): tell multiple users' runs apart cheaply. runId is
+            // fresh every session (Guid.NewGuid() here, in WriteHeader itself - a header is written
+            // exactly once per session, so this call site already has the right cadence with no
+            // extra bookkeeping). installId is Plugin.InstallId.Value - see that ConfigEntry's own
+            // doc comment in Plugin.cs for why it stays the same across every boot instead. Reading
+            // installId's value here rather than caching it locally: Config.Bind already does the
+            // one-read-per-session work, a second cache would just be a second place the same
+            // string could go stale against.
+            obj["runId"] = Guid.NewGuid().ToString();
+            obj["installId"] = Plugin.InstallId.Value ?? "";
             obj["windowSeconds"] = FmtToken(Plugin.TelemetryWindow.Value);
             // Ticks per second for the `qpc` field on every line below. Needed to convert those stamps into
             // the seconds an external capture reports.
