@@ -7,6 +7,7 @@ after Tau's Telemetry.cs 4.1 port landed (collision rule, posted in room 03:41Z)
 ## 0. What moves and what stays (inventory from the strip-list B-bucket)
 
 **Moves to the kit** (pure instrumentation, no Framesaver-feature logic):
+
 - `Telemetry.cs` (2,533 ln) — NDJSON writer, per-window sampler, spike recorder
 - `PlayerLoopProfiler.cs` (666), `GpuTelemetry.cs` (865), `ProtocolRunner.cs` (545)
 - The ~16 measurement-only patches: AiTickTiming, AsyncWorkerTiming, LateUpdateTiming,

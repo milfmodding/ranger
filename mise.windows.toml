@@ -1,0 +1,10 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+# Picked up automatically by mise on Windows (platform-specific config file).
+# There the F:\ HintPaths in Ranger.csproj resolve directly, so the plain PATH
+# dotnet works and no interop path is needed. Task definitions are shared with
+# mise.toml; only the env block differs. Written but not yet exercised from
+# the Windows side.
+
+[env]
+DOTNET = 'dotnet.exe'

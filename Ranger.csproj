@@ -11,6 +11,13 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <Deterministic>true</Deterministic>
+    <!--
+      2026-08-29: Roslyn analyzers, ported from Framesaver's csproj the same day.
+      netstandard2.1 does not enable them by default (that default starts at
+      net5.0), so this line is what turns them on.
+    -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
     <Configurations>Debug;Release</Configurations>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <!--

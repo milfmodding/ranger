@@ -1,0 +1,14 @@
+# Catches the classic AI-comment-spam opener: a docstring that
+# restates the code construct's KIND right after "This"/"The"
+# ("This function returns...", "The struct represents..."), which a
+# reader already sees in the signature one line down. Deliberately
+# narrow -- matched against real comments across this repo before
+# landing (.attest/hooks/vale/hook.sh has the account) -- WHY-focused
+# comments describe DOMAIN concepts ("the operator identity is..."),
+# not code-construct KINDS, so this rarely collides with them.
+extends: existence
+message: "Comment states the obvious ('%s') -- say why this exists or what's tricky about it, not what kind of thing it is; the signature already says that."
+level: warning
+ignorecase: true
+tokens:
+  - '^(This|The) (function|method|class|struct|enum|variable|constant|module|file|helper|util|component)\s+(is|does|returns|takes|creates|handles|represents|contains|defines|implements|provides|allows|checks|validates|ensures|iterates over|loops over|wraps)\b'

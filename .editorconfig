@@ -1,0 +1,16 @@
+# 2026-08-29: codifies the style `dotnet format` (SDK-bundled) enforces, so the
+# check gate is deterministic on both sides of the WSL/Windows boundary instead
+# of depending on Roslyn's built-in defaults. end_of_line=lf is safe to pin
+# because .gitattributes already normalizes the index to LF - this makes
+# editors and the formatter agree with git rather than fight it.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.cs]
+indent_style = space
+indent_size = 4

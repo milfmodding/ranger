@@ -16,6 +16,7 @@ for the "why" and the boundary rules; this doc is the "what, in what order" chec
 ## Inventory (unchanged from DESIGN.md section 0)
 
 **Moves to Ranger** (pure instrumentation):
+
 - `Telemetry.cs`, `PlayerLoopProfiler.cs`, `GpuTelemetry.cs`, `ProtocolRunner.cs`
 - ~16 measurement-only patches (see DESIGN.md for the full list)
 - 10 telemetry-only config entries
@@ -48,6 +49,7 @@ Checked every `using Framesaver.Patches` and every bare `Patches.X` reference ac
 core files.
 
 **Clean cuts — no coupling into shipping-feature classes, move whole with zero surgery:**
+
 - `PlayerLoopProfiler.cs` — no Framesaver usings at all.
 - `ProtocolRunner.cs` — no Framesaver usings at all.
 - `GpuTelemetry.cs` — carries `using Framesaver.Patches;` but it's vestigial: grepped every
@@ -58,6 +60,7 @@ core files.
 
 Directly calls into THREE shipping-feature classes that stay in Framesaver (the boundary
 inversion DESIGN.md section 1 describes, now with exact line numbers as of this commit):
+
 - `SleepingBotAnimatorPatch.{ResetForRaid, ReadAndReset, CulledLastFrame, CulledOffScreen,
   CulledEngine}` — lines 416, 1060, 1501, 1507, 1515. This is the shipping anim-cull feature
   (A-bucket, stays); Telemetry reads its counters for the `animCulled`/etc NDJSON fields.
@@ -68,7 +71,7 @@ inversion DESIGN.md section 1 describes, now with exact line numbers as of this 
 
 Also calls into several patch classes that DO move (measurement-only, confirmed): `Census`
 (363, 417, 2120), `BotLog` (418, 1773), `AwakeAge` (419, 1380, 1779, 2258), `DistanceGridSpawn`
-(435, 437 — NOTE: strip-list v2 already sorted DistanceGridSpawn into bucket B, i.e. "grid-spawn
+(435, 437 — Note: strip-list v2 already sorted DistanceGridSpawn into bucket B, i.e. "grid-spawn
 4" — cross-check against the strip list before assuming this one moves), `UpdateManualTiming`
 (1366, 2258), `StandByTransitions` (1373, 2259), `TriggerSubscribers` (1385), `BossSpawnGate`
 (1416, 1419 — measurement-only per DESIGN.md, but the name is close enough to BossGroupWake
@@ -237,6 +240,7 @@ code. Results:
 
 **Fully clean, move whole with zero surgery (production level; test level still needs the
 unwrap/Program.cs pass the plan already flags):**
+
 - `AsyncWorkerTimingPatches.cs`, `BossSpawnGatePatches.cs`, `LateUpdateTimingPatches.cs`
   (LateTiming), `SpawnAttemptPatches.cs`, `UpdateManualTimingPatches.cs`,
   `ComponentCensusPatches.cs` (its SleepingBotAnimatorPatch mention is a comment),
@@ -248,6 +252,7 @@ unwrap/Program.cs pass the plan already flags):**
 **Real remaining seams, all one family — shipping code EMITS into measurement** (the
 same direction as the 9 publish wrappers, so TelemetryBus.Event is the right seam for
 each; what's new is they need richer payloads than (name, float)):
+
 1. `SleepingBotAnimatorPatch` → `AwakeAge.Ended/Woke(owner)` (lines ~551/555): shipping
    notifies per-bot sleep/wake. Bus: per-bot event carrying bot identity.
 2. `BotStandByUpdatePatch` → `StandByTransitions.Woken/Slept(duration)` (~222/389):
@@ -302,6 +307,7 @@ call sites, before anything shipped. Same lesson shape as the JIT-gate retractio
 the actual surface before claiming a fit.
 
 **Landed:**
+
 - Ranger `f20a180`: `TelemetryBus.Sum(key, delta)` added — the accumulating double
   counterpart to Count (with `TryGetSum` + ResetWindow coverage). Event keeps
   last-write-wins; the distinction is documented on Sum itself.
@@ -384,6 +390,7 @@ Windows backslashes silently match nothing and produce an empty filter with no c
 (the merge then refuses on a branchless scratch — clean failure, nothing landed wrong).
 
 **Not in batch 1, with reasons recorded:**
+
 - `LateUpdateTimingPatches.cs`, `DistanceGridSpawn.cs`, `BotBackupPatches.cs`: Telemetry
   mentions are likely doc comments but need code-vs-comment verification before moving
   (DistanceGridSpawn additionally reads Plugin.GridSpawn* — seam-5 config).
@@ -454,6 +461,7 @@ assembly and cannot change owners independently. **That defect is this section's
 lesson, generalised below**, because it turned out to describe most of what remains.
 
 ## Why seam-3 (AwakeAge) and BotBackup are BOTH capstone-coupled, not independently
+
 wireable (2026-08-17 ~07:46Z)
 
 After the flip verified clean, the plan called for two more "pre-capstone seams":
@@ -501,6 +509,7 @@ lists it as a mover but nothing has touched it). Its test coupling, found by dir
 read of `tests/unwrap/Program.cs`:
 
 **Two reflection blocks, both assembly-qualified by string name:**
+
 1. `StripComment`/`TryParse` (lines ~76–99): pure parsing helpers, no BepInEx/Unity
    dependency, no state. `asm.GetType("Framesaver.ProtocolRunner")` then
    `GetMethod(..., BindingFlags.NonPublic | BindingFlags.Static)`.
@@ -521,6 +530,7 @@ Not two test programs — the file already interleaves checks across logical uni
 sequence with a running pass/fail tally) and splitting it would either duplicate the
 tally/`Check` harness or lose the single "N of M passed" summary the file's own bottom
 line reports. Concretely:
+
 - `var asm = Assembly.LoadFrom("Framesaver.dll")` stays for the classes that stay
   (StandByTransitions et al., once wherever they land).
 - Add `var rangerAsm = Assembly.LoadFrom("Ranger.dll")` once, near the top, alongside
@@ -556,6 +566,7 @@ pre-capstone move. No separate design work needed later; this section already co
 ~07:52Z by direct grep, not left as an assumption.
 
 ## ProtocolRunner's cross-assembly reflection into Plugin (2026-08-17 ~08:04Z, found during
+
 capstone commit-sequence planning)
 
 `ProtocolRunner.BuildEntryMap()` reflects `typeof(Plugin)` UNQUALIFIED, and `ProtocolRunner`
@@ -579,6 +590,7 @@ an *additional*, orthogonal cross-assembly reflection dependency that survives t
 unchanged and needs its own explicit statement rather than being silently assumed away.
 
 **What the capstone commit must do for this specifically:**
+
 - `BuildEntryMap()`'s `typeof(Plugin)` must become an explicit, guarded resolution of
   `Framesaver.Plugin` by assembly-qualified name (e.g.
   `Type.GetType("Framesaver.Plugin, Framesaver")` or an equivalent Chainloader-based lookup),
@@ -609,8 +621,9 @@ concrete plan, not a restatement of findings already above.
 
 **Into Ranger** (namespace switch `Framesaver` → `Ranger`, mechanical per every prior
 move in this doc):
+
 - `Telemetry.cs` (the sampler/window/flush/spike core — all of it, not a split)
-- `AwakeAgeTiming.cs` — NOTE: already a Ranger-side INERT COPY since batch 2
+- `AwakeAgeTiming.cs` — Note: already a Ranger-side INERT COPY since batch 2
   (`6b7558d`). Capstone re-lands its `Woke`/`Ended`/`RecordAt` as the LIVE copy and the
   Framesaver original is deleted, not moved again — the merge-with-history step already
   happened; this is a namespace-switch + delete, same shape as every other file's
@@ -630,6 +643,7 @@ move in this doc):
   references `PlayerLoopProfiler` once `Telemetry.cs` moves with it).
 
 **Stays in Framesaver, unchanged:**
+
 - `SleepingBotAnimatorPatch`, `RoleSleepDistance`, `BossGroupWake`,
   `AICoreControllerUpdatePatch`, `BotStandByUpdatePatch`, `LongRangeExemption`,
   `ModCompat`, `AsyncDrainPatch` (suppression half), `GcControl.cs` — all shipping
@@ -673,6 +687,7 @@ StandByAssigned` (called from `BotStandByInitPointsPatch`, seam 3) — THOSE cal
 never bridged additively the way seam-2 was (the seam-3 ordering correction above
 explains why: bot-identity payloads can't go through the generic bus, so they need a
 typed `RangerBridge` method same-commit). **This commit must ADD**:
+
 - `RangerBridge.NotifyAwakeAgeWoke(BotOwner)` / `NotifyAwakeAgeEnded(BotOwner)` —
   NoInlining-wrapped per the class's own established pattern, calling
   `global::Ranger.AwakeAge.Woke(bot)`/`.Ended(bot)` directly (BotOwner is a Framesaver-
@@ -704,10 +719,10 @@ typed `RangerBridge` method same-commit). **This commit must ADD**:
 - Ranger's `Plugin.cs` gains: `PlayerLoopProfiler.Install()` + `.ArmFrameGap()` calls
   (moving back from the seam-5 partial-revert), `gameObject.AddComponent<Telemetry>()`
   (the sampler component itself — Ranger's `GameObject` needs identifying; check
-  whether `BaseUnityPlugin` gives one for free the way Framesaver's does), and the
+  whether `BaseUnityPlugin` gives one automatically the way Framesaver's does), and the
   `AsyncDrainDiagnostics` config entry is ALREADY declared Ranger-side (seam-5) but
   unwired — this commit is where it finally gets read by something (the diagnostics
-  half of `AsyncDrainPatch`, whenever that class-split lands — NOTE this is likely
+  half of `AsyncDrainPatch`, whenever that class-split lands — Note this is likely
   still open after the capstone; check the strip-list's AsyncDrainPatch ruling before
   assuming it's in scope for THIS commit specifically).
 - Framesaver's `Plugin.cs` DROPS: the `PlayerLoopProfiler.Install/.ArmFrameGap` block
@@ -728,6 +743,7 @@ Add `var rangerAsm = Assembly.LoadFrom(rangerDll)` near the top (needs a second 
 or a `FindUp`-style default, mirroring the existing `dll` argument handling at the top
 of `Main`). Mechanical per-line changes, all confirmed by this session's grep of the
 test file:
+
 - Line 76/536: `asm.GetType("Framesaver.ProtocolRunner")` →
   `rangerAsm.GetType("Ranger.ProtocolRunner")` (both reflection blocks touch the same
   type, fix once, applies to both).
@@ -807,6 +823,7 @@ DLLs exist to build against).
   still not blocking, still worth doing before Sophia needs to touch Ranger directly.
 
 ## CORRECTION, found immediately after history-merge (2026-08-17 ~08:18Z): the plan
+
 above is missing the reverse-direction dependency and cannot be executed as written
 
 The commit sequence above only accounted for the 4 capstone-coupled classes
@@ -961,6 +978,7 @@ used to build directly, minus what already moved with the capstone-coupled class
 gated on `TelemetryBus`/Ranger presence same as every other registration site.**
 
 **Progress so far (2026-08-17 19:xx – 2026-08-18 06:xx):**
+
 - `TelemetryBus.cs` callback API: Ranger `1ba1364`.
 - `Telemetry.cs`'s 3 write points (`WriteHeader`/`Flush`/`WriteMark`) invoke
   `InvokeHeaderCallbacks`/`InvokeWindowCallbacks`/`InvokeMarkCallbacks`: Ranger `746a928`.

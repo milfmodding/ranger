@@ -1,0 +1,44 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+# 2026-08-29: task runner and toolchain owner, ported from Framesaver the same
+# day. Builds drive the WINDOWS toolchain through WSL interop (route 1),
+# because the csproj's references are HintPaths into F:\SPT\... that a Linux
+# dotnet cannot resolve; mise.windows.toml carries the native-Windows env.
+# dotnet stays deliberately unpinned until the csproj grows OS-conditional
+# roots. When pinning new tools: mise verifies GitHub artifact attestations
+# for aqua-backed binaries on install, and the npm backend's trust policy is
+# what kept markdownlint-cli2 out of here - prefer single-binary tools.
+
+[tools]
+ast-grep = "0.45.2"
+vale = "3.19.0"
+gitleaks = "8.30.1"
+ruff = "0.16.5"
+rumdl = "0.2.62"
+"gitlab:gaylatea/attest" = "0.1.0"
+
+[env]
+DOTNET = '/mnt/c/Program Files/dotnet/dotnet.exe'
+
+[tasks.check]
+description = "Pre-flight: warnings-as-errors build (analyzers on), then formatting verification"
+run = """
+set -euo pipefail
+"$DOTNET" build -c Release -warnaserror
+"$DOTNET" format Ranger.csproj --verify-no-changes
+# Controls before the scan, where controls exist. The ast-grep rule set is
+# deliberately empty on 2026-08-29 - this repo's first structural invariant
+# has not been named yet, and a rule invented to justify the hook would be
+# worse than the honest placeholder. The hook says so in its pass row.
+ast-grep scan
+"""
+
+[tasks.attest]
+description = "One combined view of every gate, in parallel, keep-going: mise attest [dir]"
+run = """#!/usr/bin/env bash
+set -eu
+# attest's default report location is .attest/ itself; bin/ is this repo's
+# gitignored build-output home, so pin the reports there instead.
+export ATTEST_OUTPUT_DIR="$PWD/bin/attest"
+exec attest "$@"
+"""

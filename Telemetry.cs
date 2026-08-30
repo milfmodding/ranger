@@ -1931,7 +1931,7 @@ namespace Ranger
                 using (FileStream fs = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.Read))
                 using (StreamWriter writer = new StreamWriter(fs, new UTF8Encoding(false)))
                 {
-                    for (;;)
+                    for (; ; )
                     {
                         string line = null;
                         lock (_pending)

@@ -1,0 +1,34 @@
+# Fork of write-good's Weasel.yml with "several" removed -- measured
+# against every real comment it flagged in this repo before landing
+# (.attest/hooks/vale/hook.sh has the account): every single hit was
+# ordinary, precise counting language ("several tables", "several
+# independently rendered blocks"), not vague padding. The rest of the
+# list held up against real hits and stays as upstream wrote it.
+extends: existence
+message: "'%s' is a weasel word!"
+ignorecase: true
+level: warning
+tokens:
+  - clearly
+  - completely
+  - exceedingly
+  - excellent
+  - extremely
+  - fairly
+  - huge
+  - interestingly
+  - is a number
+  - largely
+  - mostly
+  - obviously
+  - quite
+  - relatively
+  - remarkably
+  - significantly
+  - substantially
+  - surprisingly
+  - tiny
+  - usually
+  - various
+  - vast
+  - very

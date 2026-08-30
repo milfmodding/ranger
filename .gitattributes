@@ -1,0 +1,11 @@
+# 2026-08-29: cross-OS normalization, ported from Framesaver (same day, same
+# reasoning - without this file, Windows git's core.autocrlf=input and WSL
+# git's unset autocrlf disagree about which files are dirty, and a WSL-side
+# commit writes CRLF into the index permanently). LF in the index everywhere;
+# no per-machine discretion.
+* text=auto
+
+# Explicit binaries. No binary corpus is tracked today; pinned so any future
+# DLL or log drop is classified binary by rule, not by drift-prone heuristic.
+*.dll binary
+*.log binary

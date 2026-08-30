@@ -1,0 +1,9 @@
+# 2026-08-29: syntactic rule layer, ported from Framesaver. The rules
+# directory is deliberately EMPTY at adoption - Ranger's first structural
+# invariant has not been named yet, and the ast-grep hook's pass row says so
+# honestly rather than inventing a rule to justify the gate. When the first
+# real invariant lands: one rule, one invariant, kebab-case id stating the
+# violation, severity: error explicit, test cases in .ast-grep/tests for any
+# composed pattern, landed against a clean baseline.
+ruleDirs:
+  - .ast-grep/rules

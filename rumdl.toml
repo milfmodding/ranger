@@ -1,0 +1,8 @@
+# 2026-08-29: markdown gate config, ported from Framesaver's rumdl.toml (which
+# carried it over from a markdownlint-cli2 config, since deleted). MD013
+# line-length is off because this repo's docs run long lines on purpose.
+# MD033/MD040/MD046 (inline-html / fenced-code-language / code-block-style) are
+# off for tfw.computer's measured false-positive classes - angle-bracket usage
+# placeholders, non-shell fenced blocks - the kind of thing a future doc
+# reintroduces without anyone noticing this file needed to change first.
+disable = ["MD013", "MD033", "MD040", "MD046"]

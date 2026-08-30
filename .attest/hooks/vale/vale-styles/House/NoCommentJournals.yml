@@ -1,0 +1,19 @@
+# Code comments describe the current constraint; Git history holds the
+# investigation diary. Measured against the Rust and TypeScript corpora before
+# landing: these patterns select dated live measurements, named-person rulings,
+# and commit archaeology while leaving protocol versions, fixture dates, and
+# compatibility notes alone.
+extends: existence
+message: "Code comment reads like an investigation journal ('%s') -- keep the current constraint here and move authorship, dates, and incident history to Git history."
+level: warning
+ignorecase: true
+tokens:
+  - '\b(?:found|measured|verified|watched|caught|observed|proven)(?: live| in prod(?:uction)?| against prod(?:uction)?| 20\d{2}-\d{2}-\d{2})\b'
+  - '\b(?:found|measured|verified|watched|caught|observed|proven)[^.!?\n]{0,100}\b20\d{2}-\d{2}-\d{2}\b'
+  - '\b(?:prod(?:uction)?|live),? 20\d{2}-\d{2}-\d{2}\b'
+  - '\bSophia(?:''s (?:ask|call|ruling|decision)|, 20\d{2}-\d{2}-\d{2})\b'
+  - '\b(?:her|his|their) (?:ask|call|ruling|report|note)\b'
+  - '\bby ruling(?: \([^)]*\))?\b'
+  - '\bregression \(20\d{2}-\d{2}-\d{2}\)\b'
+  - '\bthe old (?:bug|console|setup|implementation|ruling)\b'
+  - '\bcommit [0-9a-f]{7,40}\b'
