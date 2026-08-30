@@ -1,5 +1,13 @@
 # Telemetry-kit extraction — design draft (Echo, 2026-08-16)
 
+> **Superseded in part (2026-08-29).** The extraction this draft sequenced is
+> complete (capstone, 2026-08-19). The shipped bus API is larger than this draft's
+> `Count`/`Event`/`Tag` framing - it adds `Sum`, seven registered-callback
+> families, and two one-slot reader registrations - and publish sites are
+> registered callbacks rather than the Framesaver-side `if (Enabled)` calls
+> sketched here. The boundary rule ("the kit records facts; the mod produces
+> them") stands; check the code and `docs/FIELD-MAPPING.md` for current shape.
+
 For Sophia's item 3: "pull the telemetry code into its own mod, make Framesaver the
 exemplar of how to use it." Draft for boundary sanity-check; implementation sequenced
 after Tau's Telemetry.cs 4.1 port landed (collision rule, posted in room 03:41Z).

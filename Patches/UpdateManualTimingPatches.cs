@@ -170,17 +170,11 @@ namespace Ranger
         /// a real JValue rather than a formatted string, same shape and same reasoning as
         /// Telemetry.FmtToken (this file has no reference to that private method, so the
         /// NaN/Infinity-to-null handling is duplicated here rather than shared - same
-        /// two-line guard, not worth a cross-file helper for one call site's parity).
+        /// two-line guard, now delegated to AiTiming.Guarded).
         /// </summary>
         private static JToken MsToken(long ticks)
         {
-            double ms = AiTiming.ToMs(ticks);
-            if (double.IsNaN(ms) || double.IsInfinity(ms))
-            {
-                return JValue.CreateNull();
-            }
-
-            return new JValue(ms);
+            return AiTiming.Guarded(AiTiming.ToMs(ticks));
         }
 
         public static void ResetWindow()

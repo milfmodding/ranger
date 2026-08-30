@@ -314,8 +314,8 @@ namespace Ranger
         /// and an unsorted list produces spurious diffs. Rows stay duplicated where types repeat, since
         /// the comparison is a multiset.
         /// </summary>
-        /// <summary>One enumeration root: what was asked for, where it turned out to live, and how many
-        /// components came from it. Recorded even when the root resolved to null.</summary>
+        /// One enumeration root: what was asked for, where it turned out to live, and how many
+        /// components came from it. Recorded even when the root resolved to null.
         private struct RootInfo
         {
             public string Label;

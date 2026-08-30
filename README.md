@@ -4,13 +4,11 @@ The standalone telemetry kit for SPT performance work — extracted from Framesa
 can record durable per-window frame telemetry with a five-line integration, instead of building
 its own recorder.
 
-**Status: skeleton only.** This repo currently holds a project shell and design docs. The actual
-recorder core (NDJSON writer, per-window sampler, spike recorder, protocol runner, ~16
-measurement-only Harmony patches) still lives in Framesaver and has not been moved yet — see
-`docs/EXTRACTION-PLAN.md` for what moves, what stays, and in what order.
-
-Framesaver is the reference implementation: once extraction lands, its own telemetry calls
-become the worked example of how a consumer mod uses `TelemetryBus`.
+**Status: extraction complete.** The recorder core moved from Framesaver at the capstone
+(2026-08-19): the NDJSON writer, per-window sampler, spike recorder, protocol runner, and the
+measurement-only Harmony patches live in this repo (see `docs/EXTRACTION-PLAN.md` for the
+order it happened in). Framesaver remains the reference consumer — its own telemetry calls
+are the worked example of how a mod uses `TelemetryBus`.
 
 ## Design
 
@@ -28,6 +26,5 @@ Same convention as Framesaver: `dotnet build -c Release` compiles only; add `-p:
 copy the built DLL into the configured SPT install's `BepInEx/plugins/`. `SptDir` in
 `Ranger.csproj` currently points at `F:\SPT\SPT-4.1`.
 
-The dirty-tree deploy gate Framesaver carries (`RefuseDirtyDeploy`) is intentionally not copied
-here yet — there is no real source history to protect until extraction lands actual code. It
-gets added back once the first real commit exists.
+The dirty-tree deploy gate Framesaver carries (`RefuseDirtyDeploy`) was ported into
+`Ranger.csproj` on 2026-08-19, once extraction landed real source history to protect.

@@ -196,9 +196,8 @@ namespace Ranger
         }
     }
 
-    /// <summary>
     /// The only one of these counters that represents a bot the player can actually meet.
-    /// </summary>
+    ///
     /// <summary>
     /// Times the per-bot build call - the call that actually builds a bot, prefab and all - rather than
     /// BotOwner.Create, which turned out to be a 0.2 ms leaf with at most 4 per frame and could not possibly

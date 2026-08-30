@@ -25,7 +25,7 @@ namespace Ranger
     /// rather than left to accumulate - render/update/fixedUpdate (duplicated by the player-loop phases),
     /// the AI brain split, VisualPass, GameWorld.LateUpdate, camera count, fixedSteps, the
     /// drain budget's defer/truncate counters, ForceExecuteContinuations, the shell sweep, weapon audio,
-    /// and the bundle dependency graph. FINDINGS.md records what each of them showed.
+    /// and the bundle dependency graph. The deleted FINDINGS corpus recorded what each of them showed (git history).
     ///
     /// What is kept is either still open, guards a confirmed fix against regression, or is a headline
     /// number:
@@ -58,10 +58,10 @@ namespace Ranger
         private readonly Stat _playerTick = new Stat();
         private Stat[] _phases;
 
-        // Raw samples so the window can report percentiles. A fixed spike threshold turned out to be a poor
-        // stutter metric: 16ms is 1.7x the mean on Customs but only 1.3x on Streets, so the same number means
-        // very different things per map. p99/p50 is scale-free.
-        private readonly List<double> _gameUpdateSamples = new List<double>(8192);
+        // Raw frame samples so the window can report percentiles. A fixed spike threshold turned out to be a
+        // poor stutter metric: 16ms is 1.7x the mean on Customs but only 1.3x on Streets, so the same number
+        // means very different things per map. p99/p50 is scale-free. (A _gameUpdateSamples twin was removed
+        // 2026-08-29: write-only - unlike _frameSamples it fed no percentile block.)
         private readonly List<double> _frameSamples = new List<double>(8192);
 
         // Brains ticked, summed over the window. Capstone finding: this used to be TWO
@@ -222,7 +222,7 @@ namespace Ranger
         // ---- Position ------------------------------------------------------------------------------
         //
         // Location dominates frame time on large maps, and until now every cross-window comparison could
-        // only *warn* about it. Six caveats in FINDINGS say "hold position"; nothing checked whether it
+        // only *warn* about it. Six caveats in the deleted FINDINGS corpus said "hold position"; nothing checked whether it
         // was held. The knob A/B on 2026-07-28 was rendered uninterpretable by exactly this - p50 drifted
         // 13.9 -> 22.1 -> 14.3 while awake bots sat flat, so the reversal did not reverse.
         //
@@ -852,14 +852,8 @@ namespace Ranger
             _asyncFixedSkips += AsyncWorkerTiming.FixedSkips;
             AsyncWorkerTiming.Reset();
             _asyncDrained.Add(_lastDrained);
-            // How many physics steps ran this frame - separates "many steps" from "one expensive step".
-            if (m != null)
-            {
-            }
             _playerLate.Add(LateTiming.PlayerLateMs);
             _playerTick.Add(LateTiming.PlayerTickMs);
-            // AmbientLight rebuilds a full stencil-shadow command buffer per registered camera per frame, so
-            // camera count is a direct multiplier on that cost. Scope optics add one; some mods add more.
 
             if (PlayerLoopProfiler.Installed)
             {
@@ -881,10 +875,12 @@ namespace Ranger
                     _phases[i].Add(phase[i]);
                 }
             }
-            // Capstone finding: SleepingBotAnimatorPatch.ReadAndReset() moved to
             // Framesaver's registered per-frame callback (invoked below via
-            // TelemetryBus.InvokePerFrameCallbacks(), alongside GcControl's ApplyConfig/
-            // Drive/Track which have the same per-frame, sampler-calls-OUT shape).
+            // TelemetryBus.InvokePerFrameCallbacks()) carries FrameLevers, GcControl's
+            // ApplyConfig/Drive/Track, and AsyncDrain.PublishAndResetFrame - the same
+            // per-frame, sampler-calls-OUT shape. (An early version of this comment named
+            // SleepingBotAnimatorPatch.ReadAndReset as a registrant; that empty method was
+            // removed on 2026-08-29.)
             TelemetryBus.InvokePerFrameCallbacks();
             LateTiming.Reset();
 
@@ -897,7 +893,6 @@ namespace Ranger
             double frameMs = m != null ? m.GameFrameMeasurer.MeasureStatistics.LastValue : 0d;
             if (m != null)
             {
-                _gameUpdateSamples.Add(gameUpdate);
                 _frameSamples.Add(frameMs);
             }
 
@@ -1157,12 +1152,10 @@ namespace Ranger
             // (obj.Properties()) and removes an entire class of hand-matched-quote/brace bugs the old
             // StringBuilder path was exposed to. See Sophia's ruling, room 2026-08-19 17:02Z.
             //
-            // Several sub-modules (UpdateManualTiming, StandByTransitions, AwakeAge, RaidInit,
-            // BossSpawnGate, GpuTelemetry) still build their OWN fragments as raw JSON text via
-            // StringBuilder - that is unchanged in this pass, deliberately scoped down (see the room
-            // post explaining the bounded-first-pass decision). Their text is embedded verbatim via
-            // JRaw, which Newtonsoft serializes byte-for-byte without re-parsing it - so the output
-            // shape for those fields is unchanged even though this method itself now builds a JObject.
+            // The sub-modules (UpdateManualTiming, StandByTransitions, AwakeAge, RaidInit,
+            // BossSpawnGate, GpuTelemetry) build their OWN fragments as JObjects and this
+            // method embeds them - the 2026-08-19 sub-module pass converted every one; an
+            // earlier version of this comment still claimed StringBuilder text and JRaw.
             JObject obj = new JObject();
             obj["type"] = "sample";
             obj["window"] = _window;
@@ -1201,20 +1194,6 @@ namespace Ranger
             bots["roleUnknown"] = roleUnknown;
             obj["bots"] = bots;
 
-            // Ranger extraction, additive: publish the same five counts to the bus so
-            // other consumers can read them without re-deriving. This used to be a
-            // RangerBridge.PublishBotStandByCounts call FROM Framesaver INTO Ranger, back
-            // when Telemetry.cs lived in Framesaver's assembly and needed the bridge's
-            // JIT-isolation to touch TelemetryBus safely. Now that this file IS Ranger, the
-            // bridge indirection is pointless (and does not compile - Ranger has no
-            // reference to Framesaver, by design) - a plain, same-assembly TelemetryBus call,
-            // no Present gate needed since TelemetryBus is always here.
-            TelemetryBus.Event("botStandBy.awake", awake);
-            TelemetryBus.Event("botStandBy.asleep", asleep);
-            TelemetryBus.Event("botStandBy.exempt", exempt);
-            TelemetryBus.Event("botStandBy.roleUnknown", roleUnknown);
-            TelemetryBus.Event("botStandBy.standByRefused", standByRefused);
-
             obj["frame"] = BlockObj(_frame);
             obj["gameUpdate"] = BlockObj(_gameUpdate);
             obj["jobQueue"] = BlockObj(_jobQueue);
@@ -1237,7 +1216,32 @@ namespace Ranger
             //
             // JObject conversion (2026-08-19, sub-module pass): StandByTransitions now
             // builds its own JObject directly, same pattern as UpdateManualTiming above.
-            obj["standByTransitions"] = StandByTransitions.AppendObj();
+            // WIRING REPAIR (2026-08-29): since the capstone moved Framesaver's direct
+            // StandByTransitions.Woken/Slept calls into a bus publish, AppendObj's own
+            // woken/slept counters have had no writer - every window emitted zeros for all
+            // four fields, and check-fields' presence-only assertion could not tell. The
+            // bus is the feed now: Framesaver's PublishStandByTransition Counts and Sums
+            // the transitions as standby.* keys; merge those (per-window values, cleared
+            // by TelemetryBus.ResetWindow at this same boundary) over the block. The death
+            // counters remain AppendObj's own.
+            JObject standByTransitions = StandByTransitions.AppendObj();
+            if (TelemetryBus.TryGetCount("standBy.woken", out int busWoken))
+            {
+                standByTransitions["woken"] = busWoken;
+            }
+            if (TelemetryBus.TryGetSum("standBy.wokenMs", out double busWokenMs))
+            {
+                standByTransitions["wokenMs"] = busWokenMs;
+            }
+            if (TelemetryBus.TryGetCount("standBy.slept", out int busSlept))
+            {
+                standByTransitions["slept"] = busSlept;
+            }
+            if (TelemetryBus.TryGetSum("standBy.sleptMs", out double busSleptMs))
+            {
+                standByTransitions["sleptMs"] = busSleptMs;
+            }
+            obj["standByTransitions"] = standByTransitions;
 
             // updateManual's cost split by how long each bot has been
             // continuously awake. The buckets are the per-bot part: a window
@@ -1291,12 +1295,6 @@ namespace Ranger
             botBackup["fired"] = BotBackup.Fired;
             botBackup["bailed"] = BotBackup.Bailed;
             obj["botBackup"] = botBackup;
-
-            // Ranger extraction (2026-08-16/17): publish-side addition, ADDITIVE. Does not change
-            // the NDJSON block above - Fired/Bailed are read fresh above, this is a
-            // separate statement after them. Publishes all five fields BotBackup tracks (also
-            // Added/PendingMax/LargestRequest), not just the two the NDJSON block emits.
-            BotBackup.PublishTelemetry();
 
             JObject bundleLoad = new JObject();
             bundleLoad["calls"] = BundleLoad.Calls;
@@ -1508,12 +1506,11 @@ namespace Ranger
             // callback alongside the fields removed above - same reasoning, nested under
             // "framesaver.ai.perf":{...} by InvokeWindowCallbacks below.
 
-            // TelemetryBus.InvokeWindowCallbacks builds its own JObject internally (has since
-            // 2026-08-18) and previously spliced it into a StringBuilder as raw text. That
-            // StringBuilder-facing overload still exists for WriteHeader/WriteMark/EmitSpikeEvent
-            // (unconverted this pass - Tau's slice), so it is reused here via one small
-            // StringBuilder capturing exactly the callback splice and nothing else, then merged in
-            // as JObject fields the same way the GpuTelemetry fragments above are.
+            // TelemetryBus.InvokeWindowCallbacks builds its own JObject internally (since
+            // 2026-08-18) and splices it into a StringBuilder as comma-first raw text; this
+            // site re-parses that splice into JObject fields. WriteHeader/WriteMark/
+            // EmitSpikeEvent make the same round trip - JObject-facing Invoke overloads
+            // that would remove it are a named follow-on, not yet written.
             StringBuilder windowCallbackSb = new StringBuilder(256);
             TelemetryBus.InvokeWindowCallbacks(windowCallbackSb);
             SpliceRawFields(obj, windowCallbackSb.ToString());
@@ -1606,7 +1603,7 @@ namespace Ranger
                 // A null StandBy drops the bot from both counts, so awake+asleep can
                 // silently undercount rather than misclassify. Nothing here bounds how
                 // many are dropped - that is why agents.live is reported alongside, and
-                // the two are cross-checked rather than assumed equal. See FINDINGS.
+                // the two are cross-checked rather than assumed equal. (The deleted FINDINGS corpus held the cross-check; git history.)
                 if (bot == null || bot.StandBy == null)
                 {
                     continue;
@@ -2052,9 +2049,14 @@ namespace Ranger
             // class's window-scoped counters directly - routed through TelemetryBus.
             // InvokeWindowResetCallbacks, called at the same boundary this method zeroes
             // its own accumulators.
+            // The bus's own Count/Sum accumulators (standBy.*, aiCoreController.*) are
+            // per-window by their documented semantics - without this call they silently
+            // accumulated for the whole session (found 2026-08-29: the method existed with
+            // a "call at window close" contract and nothing ever called it). Runs AFTER
+            // Flush has read the values for the window being closed.
+            TelemetryBus.ResetWindow();
             TelemetryBus.InvokeWindowResetCallbacks();
             _heapMb.Reset();
-            _gameUpdateSamples.Clear();
             _frameSamples.Clear();
             _allocatedBytes = 0d;
             _gen0Base = _gen0;
@@ -2062,7 +2064,7 @@ namespace Ranger
         }
 
         /// <summary>
-        /// JObject counterpart to <see cref="AppendRaidIdentity(StringBuilder)"/>. Same two fields.
+        /// JObject counterpart to the retired StringBuilder AppendRaidIdentity helper. Same two fields.
         /// </summary>
         private void AppendRaidIdentityObj(JObject obj)
         {
@@ -2071,7 +2073,7 @@ namespace Ranger
         }
 
         /// <summary>
-        /// JObject counterpart to <see cref="AppendRaidClock(StringBuilder)"/>. Omits all three fields
+        /// JObject counterpart to the retired StringBuilder AppendRaidClock helper. Omits all three fields
         /// when outside a raid, same as the StringBuilder version omitting the fragment entirely.
         /// </summary>
         private static void AppendRaidClockObj(JObject obj)
@@ -2107,7 +2109,7 @@ namespace Ranger
         }
 
         /// <summary>
-        /// JObject counterpart to <see cref="AppendPosition(StringBuilder)"/>. Same null-vs-populated
+        /// JObject counterpart to the retired StringBuilder AppendPosition helper. Same null-vs-populated
         /// shape: `pos.dist` is null with `samples:0` when nothing was ever sampled, never a zero that
         /// could be mistaken for a held position.
         /// </summary>
@@ -2133,7 +2135,7 @@ namespace Ranger
         }
 
         /// <summary>
-        /// JObject counterpart to <see cref="AppendLook(StringBuilder)"/>, nested inside the `pos`
+        /// JObject counterpart to the retired StringBuilder AppendLook helper, nested inside the `pos`
         /// object passed in (matching the StringBuilder version's `,"look":...` placement inside the
         /// same `pos:{...}` block). Null, never zero, when nothing was sampled - see that method's own
         /// doc comment for why.
@@ -2160,7 +2162,7 @@ namespace Ranger
         }
 
         /// <summary>
-        /// JObject counterpart to <see cref="AppendProc(StringBuilder)"/>. Same three error shapes
+        /// JObject counterpart to the retired StringBuilder AppendProc helper. Same three error shapes
         /// (pinvoke/zero/call) and the same null-on-first-window baseline deltas as the original - see
         /// that method's own doc comment for the full reasoning, unchanged here.
         /// </summary>
@@ -2223,7 +2225,7 @@ namespace Ranger
         }
 
         /// <summary>
-        /// JObject counterpart to <see cref="AppendPercentiles(StringBuilder, string, List{double})"/>.
+        /// JObject counterpart to the retired StringBuilder AppendPercentiles helper.
         /// Omits the field entirely on an empty sample set, same as the StringBuilder version.
         /// </summary>
         private static void AppendPercentilesObj(JObject obj, string name, List<double> samples)
@@ -2247,9 +2249,9 @@ namespace Ranger
         /// Parses a StringBuilder fragment shaped like `,"key1":val1,"key2":val2,...` (the comma-first
         /// convention every AppendX method in this class uses) and merges each key into `obj` as a
         /// JRaw value - i.e. embeds the ALREADY-SERIALIZED text verbatim rather than re-parsing it into
-        /// a JObject/JValue tree. Used for the sub-modules (GpuTelemetry, TelemetryBus's registered
-        /// callback splice) this pass deliberately leaves StringBuilder-based - see Flush()'s own doc
-        /// comment for why. Wraps the fragment in `{...}` first so Newtonsoft's own parser (rather than
+        /// a JObject/JValue tree. Used for the TelemetryBus registered-callback splice (and
+        /// DrainCensus), whose StringBuilder round trip is a documented interim until
+        /// JObject-facing Invoke overloads land. Wraps the fragment in `{...}` first so Newtonsoft's own parser (rather than
         /// hand-rolled comma splitting, which the original code never needed either) does the actual
         /// key/value split, which is the same trust boundary SpliceFields in TelemetryBus.cs already
         /// relies on for the registered-callback path.

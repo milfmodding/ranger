@@ -237,11 +237,6 @@ namespace Ranger
         /// PhaseNames. This is the instrument that turns "a collection happened on this frame and the frame
         /// was slow" into "the collection ran inside this phase".
         /// </summary>
-        public static int[] GcSnapshot
-        {
-            get { return _gcSnapshot; }
-        }
-
         /// <summary>
         /// Name of the top-level phase a collection completed in this frame, or empty. Children are ignored:
         /// a collection inside an expanded child also counts against its parent, and reporting both would
@@ -363,7 +358,7 @@ namespace Ranger
         /// <summary>
         /// Copies the accumulated per-phase totals and zeroes them. Called once per frame from Telemetry.
         /// </summary>
-        public static void ReadAndReset()
+        private static void ReadAndReset()
         {
             lock (Gate)
             {
@@ -398,7 +393,7 @@ namespace Ranger
 
                 // EVERY top-level phase, not any. The previous version returned true as soon as one phase
                 // still had its marker, so a mod clobbering seven of eight triggered no reinstall and the
-                // seven then reported 0 ms - which CORPUS.md instructs readers to interpret as "below the
+                // seven then reported 0 ms - which the deleted CORPUS.md instructed readers to interpret as "below the
                 // 0.5 ms drop threshold". A clobbered phase and a fast phase were indistinguishable in the
                 // output, silently, in data we have already drawn conclusions from.
                 //
@@ -430,7 +425,7 @@ namespace Ranger
         /// runs are scarce.
         ///
         /// Empty means expand everything. Deliberately no default entries: `Initialization` medians
-        /// 0.005 ms over 140 in-raid windows and looks like an obvious block, but FINDINGS records one
+        /// 0.005 ms over 140 in-raid windows and looks like an obvious block, but the deleted FINDINGS corpus records one
         /// in-raid `Initialization` spike at 74.8 ms. Blocking on average cost would reintroduce exactly
         /// the omission this shape exists to prevent - a spike instrument has to be aimed at the tail.
         /// </summary>

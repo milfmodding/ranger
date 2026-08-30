@@ -18,6 +18,22 @@ namespace Ranger
     /// </summary>
     public static class AiTiming
     {
+        /// <summary>
+        /// The shared NDJSON numeric guard: a timing converted to ms, or null when the
+        /// conversion produced NaN/Infinity. Collapsed on 2026-08-29 from four per-file
+        /// copies (UpdateManualTiming, StandByTransitionTiming, AwakeAgeTiming, RaidInit)
+        /// whose "duplicated rather than shared" rationale dated from when these files sat
+        /// in two different assemblies - they have been one assembly since the capstone.
+        /// </summary>
+        internal static Newtonsoft.Json.Linq.JToken Guarded(double ms)
+        {
+            if (double.IsNaN(ms) || double.IsInfinity(ms))
+            {
+                return Newtonsoft.Json.Linq.JValue.CreateNull();
+            }
+
+            return new Newtonsoft.Json.Linq.JValue(ms);
+        }
         /// <summary>BotsController.UpdateByUnity (4.0.13: method_0) - the whole AI tick, driven from BaseLocalGame.Update.</summary>
         public static double TotalMs;
 

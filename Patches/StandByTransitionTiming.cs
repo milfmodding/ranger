@@ -118,13 +118,7 @@ namespace Ranger
         /// </summary>
         private static JToken MsToken(long ticks)
         {
-            double ms = AiTiming.ToMs(ticks);
-            if (double.IsNaN(ms) || double.IsInfinity(ms))
-            {
-                return JValue.CreateNull();
-            }
-
-            return new JValue(ms);
+            return AiTiming.Guarded(AiTiming.ToMs(ticks));
         }
 
         public static void ResetWindow()

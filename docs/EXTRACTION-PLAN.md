@@ -1,5 +1,11 @@
 # Extraction plan (Echo, 2026-08-16, started post-marathon)
 
+> **STATUS: COMPLETE (2026-08-29).** The migration finished with the capstone
+> (2026-08-19); this document is the historical checklist. The risks section below is
+> historical too - `analysis/*.py` and the protocol-INI corpus were deleted from
+> Framesaver on 2026-08-29 (their commit: 0588c35). The one item still genuinely open
+> is the AsyncDrainPatch class-split (see the seam-5 section).
+
 Tracks the mechanical move of telemetry code from Framesaver into this repo. See DESIGN.md
 for the "why" and the boundary rules; this doc is the "what, in what order" checklist.
 

@@ -24,15 +24,13 @@ namespace Ranger
     /// SpikeEventMs 30 (code default was 100), Window 30 (code default 60),
     /// MarkKey Mouse3, protocol key PageDown+Ctrl+Alt.
     ///
-    /// What is NOT here yet, deliberately: the sampler core itself (Telemetry.cs
-    /// still lives in Framesaver and still writes the ndjson — it moves at the
-    /// capstone commit with BotLog). What this flip changes is WHO OWNS the
-    /// measurement patches and their config, so the sampler's reads (which it
-    /// repoints at the bus at capstone) have a live owner on this side.
-    /// Translation for the raid right after this lands: Framesaver's Telemetry
-    /// component keeps writing the ndjson exactly as before; the patches feeding
-    /// it are now Ranger's. If the post-flip raid shows the same ndjson shape as
-    /// the gate-fix verification raid, the flip is clean.
+    /// What moved here at the capstone (2026-08-19), deliberately: the sampler core
+    /// itself - Telemetry.cs came over with BotLog, and this flip changed WHO OWNS the
+    /// measurement patches and their config, so the sampler's reads (repointed at the
+    /// bus at capstone) have their live owner on this side. Translation for the raid
+    /// right after it landed: Ranger's Telemetry component writes the ndjson; the
+    /// patches feeding it are Ranger's. (An earlier version of this paragraph was
+    /// written pre-flip and described the move as still pending.)
     /// </summary>
     [BepInPlugin("ranger.telemetry.kit", "Ranger", "0.1.0")]
     public class Plugin : BaseUnityPlugin
@@ -81,11 +79,13 @@ namespace Ranger
         public static ConfigEntry<string> ExpandPhase;
         public static ConfigEntry<bool> ProfilePlayerLoop;
 
-        // AsyncDrain diagnostics (worstCallbacks): read by AsyncDrainPatch's diagnostics half,
-        // which is still in Framesaver until the class-split's cutover half. Declared here NOW
-        // so the config surface moves once, not twice - Framesaver's Telemetry still reads its
-        // own copy until the capstone, at which point only Ranger's is read.
-        // NOT YET WIRED to any Ranger-side reader; see the seam-5 notes in EXTRACTION-PLAN.md.
+        // AsyncDrain diagnostics (worstCallbacks): STILL FRAMESAVER-SIDE. AsyncDrainPatch
+        // lives entirely in Framesaver and reads FRAMESAVER's own identically-named entry -
+        // this Ranger copy is read by nothing. Deliberate staging for the still-pending
+        // AsyncDrainPatch class-split (EXTRACTION-PLAN.md), so the bind stays; be aware it
+        // shadows Framesaver's entry in ProtocolRunner's key-only protocol map (Framesaver's
+        // entries are added last and win). NOT YET WIRED to any Ranger-side reader; see the
+        // seam-5 notes in EXTRACTION-PLAN.md.
         public static ConfigEntry<bool> AsyncDrainDiagnostics;
 
         private void Awake()
@@ -245,17 +245,17 @@ namespace Ranger
             new UpdateManualTimingPatch().Enable();
             new BossWaveSettingsPatch().Enable();
             new BotControllerSettingsPatch().Enable();
-            // AsyncWorkerUpdatePatch/AsyncWorkerFixedUpdatePatch deliberately NOT enabled here.
-            // Found and fixed same-session: AsyncWorkerTimingPatches.cs is a MIXED file
-            // (EXTRACTION-PLAN.md, Sophia's 2026-08-17 05:13Z ruling) - its FixedUpdate patch's
-            // Prefix implements the shipping "Drain completions in Update only" lever
-            // (Plugin.DrainInUpdateOnly), not just measurement. Deleting Framesaver's whole
-            // file (this session's first pass) silently dropped that lever; restoring it means
-            // Framesaver keeps the ONE Harmony patch on both AsyncWorker.Update/.FixedUpdate,
-            // now writing into THIS class's statics via RangerBridge instead of a
-            // Framesaver-local field. Enabling these two classes here as well would put a
-            // SECOND Harmony patch on the same two methods - this class (AsyncWorkerTiming)
-            // stays enabled as data storage only; its two ModulePatch classes stay disabled.
+            // AsyncWorkerUpdatePatch/AsyncWorkerFixedUpdatePatch were REMOVED on 2026-08-29.
+            // History: AsyncWorkerTimingPatches.cs is a MIXED file (EXTRACTION-PLAN.md,
+            // Sophia's 2026-08-17 05:13Z ruling) - its FixedUpdate patch's Prefix implements
+            // the shipping "Drain completions in Update only" lever (Plugin.DrainInUpdateOnly),
+            // not just measurement. Deleting Framesaver's whole file (this session's first
+            // pass) silently dropped that lever; restoring it means Framesaver keeps the ONE
+            // Harmony patch on both AsyncWorker.Update/.FixedUpdate, writing into THIS class's
+            // statics via RangerBridge instead of a Framesaver-local field. Enabling Ranger's
+            // two patch classes as well would have put a SECOND Harmony patch on the same two
+            // methods, so they stayed disabled for as long as they existed - and are now gone,
+            // leaving AsyncWorkerTiming as data storage only.
             new ProfileCtorPatch().Enable();
             new ProfileInventoryPatch().Enable();
             new BundleLoadPatch().Enable();

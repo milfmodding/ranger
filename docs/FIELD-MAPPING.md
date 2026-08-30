@@ -1,8 +1,10 @@
 # Field mapping: pre-capstone flat paths -> post-capstone nested paths
 
 Written at the capstone cutover commit (2026-08-19). For anyone maintaining
-`analysis/*.py` or `harness/check-*.py` scripts that read Framesaver's old
-NDJSON output by flat path name.
+`harness/check-*.py` scripts (in either repo) that read Framesaver's old NDJSON
+output by flat path name. (The sibling Framesaver `analysis/*.py` corpus was
+deleted 2026-08-29 - commit 0588c35 - so this doc's remaining audience is the
+harness checkers.)
 
 ## Why this exists
 

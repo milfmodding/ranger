@@ -130,10 +130,11 @@ namespace Ranger
         /// looked. That undercounts its true age rather than misattributing
         /// it, which is the same trade CountBots makes with a null StandBy.
         ///
-        /// PUBLIC (capstone cutover, 2026-08-19): UpdateManualTimingPatches.cs stays in
-        /// Framesaver (it is the shipping-adjacent per-bot timing instrument, not moved with
-        /// this file), so its call site needs cross-assembly access - same reasoning as
-        /// Woke/Ended above.
+        /// Same-assembly since the capstone (2026-08-19): UpdateManualTimingPatches.cs moved
+        /// WITH this file, so the call site in its Prefix needs no bridge - an earlier
+        /// version of this comment, written mid-extraction, had it staying in Framesaver
+        /// behind a cross-assembly bridge (that bridge call site had zero callers and was
+        /// deleted from Framesaver on 2026-08-29). Same reasoning as Woke/Ended above.
         /// </summary>
         public static void Record(BotOwner bot, long ticks)
         {
@@ -193,7 +194,6 @@ namespace Ranger
         /// `toS` is the bucket's upper edge in seconds, null for the tail, so
         /// a reader never has to know the edges from somewhere else.
         /// </summary>
-        /// <summary>
         /// JObject/JArray conversion (2026-08-19, sub-module pass following Telemetry.cs's
         /// own Flush()/WriteHeader/WriteMark/EmitSpikeEvent conversion) - see
         /// UpdateManualTiming.AppendObj's own comment for the shared reasoning. This field
@@ -222,13 +222,7 @@ namespace Ranger
         /// </summary>
         private static JToken MsToken(long ticks)
         {
-            double ms = AiTiming.ToMs(ticks);
-            if (double.IsNaN(ms) || double.IsInfinity(ms))
-            {
-                return JValue.CreateNull();
-            }
-
-            return new JValue(ms);
+            return AiTiming.Guarded(AiTiming.ToMs(ticks));
         }
 
         /// <summary>

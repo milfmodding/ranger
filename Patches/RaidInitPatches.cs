@@ -346,12 +346,7 @@ namespace Ranger
         /// </summary>
         private static JToken FT(double value)
         {
-            if (double.IsNaN(value) || double.IsInfinity(value))
-            {
-                return JValue.CreateNull();
-            }
-
-            return new JValue(value);
+            return AiTiming.Guarded(value);
         }
 
         public static void ResetWindow()

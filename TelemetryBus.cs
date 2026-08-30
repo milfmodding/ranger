@@ -16,8 +16,8 @@ namespace Ranger
     /// THIS SOLVES ONE DIRECTION OF THE BOUNDARY, NOT BOTH. It is for shipping features
     /// PUBLISHING facts the kit should record (Framesaver's SleepingBotAnimatorPatch,
     /// RoleSleepDistance, BossGroupWake are the three concrete callers named in
-    /// docs/DESIGN.md section 1 - none are wired yet, that is the next step after this
-    /// class exists).
+    /// docs/DESIGN.md section 1 - all three have wired through RangerBridge since the
+    /// capstone; an early version of this comment predated the wiring).
     ///
     /// It does NOT solve the opposite direction: Framesaver's Telemetry.cs currently
     /// READS FROM PlayerLoopProfiler/GpuTelemetry (kit-side instruments) to build its own
@@ -47,14 +47,14 @@ namespace Ranger
         /// </summary>
         public static bool Enabled { get; internal set; }
 
-        // Per-window accumulators. Cleared by ResetWindow(), called by whichever side
-        // owns window boundaries - today that is still Framesaver's Telemetry.cs, since
-        // the sampler loop has not moved yet. This is intentionally the simplest
-        // structure that could work: a dictionary per fact kind, keyed by the
-        // producer's own string. No allocation avoidance work has been done yet because
-        // nothing calls this in a hot path today - the three named callers
-        // (SleepingBotAnimatorPatch, RoleSleepDistance, BossGroupWake) each fire at most
-        // a few times per frame, not per-bot-per-frame.
+        // Per-window accumulators. Cleared by ResetWindow(), called from Telemetry's
+        // own ResetWindow at the window boundary - the sampler loop moved into this
+        // assembly at the capstone. An earlier version of this comment said the call
+        // site was still Framesaver's and did not exist yet; the missing call was found
+        // and wired 2026-08-29 (until then every Count/Sum here accumulated
+        // session-wide while every doc comment claimed per-window). This is
+        // intentionally the simplest structure that could work: a dictionary per fact
+        // kind, keyed by the producer's own string.
 
         private static readonly Dictionary<string, int> _counts = new Dictionary<string, int>();
         private static readonly Dictionary<string, double> _events = new Dictionary<string, double>();
@@ -104,8 +104,9 @@ namespace Ranger
         }
 
         /// <summary>
-        /// Read-side accessors, for whatever builds the NDJSON output (today: Framesaver's
-        /// Telemetry.cs, unmoved). Returns the accumulated value or the given default if the
+        /// Read-side accessors, for the NDJSON builder (Ranger's Telemetry.cs, since the
+        /// capstone) and for registered publishers reading each other back. Returns the
+        /// accumulated value or the given default if the
         /// key was never touched this window - "never published" and "published as zero" are
         /// different facts and callers should not conflate them by defaulting silently to 0
         /// without checking TryGet first if that distinction matters to them.
@@ -113,7 +114,9 @@ namespace Ranger
         public static bool TryGetCount(string key, out int value) => _counts.TryGetValue(key, out value);
         public static bool TryGetEvent(string key, out double value) => _events.TryGetValue(key, out value);
         public static bool TryGetSum(string key, out double value) => _sums.TryGetValue(key, out value);
-        public static bool TryGetTag(string key, out string value) => _tags.TryGetValue(key, out value);
+        // TryGetTag was removed 2026-08-29: nothing in either repo ever read a tag back
+        // (the modCompat.* tags are informational for other bus consumers that do not
+        // exist). Re-add it together with a real Tag reader, not speculatively.
 
         /// <summary>Clears all accumulated facts. Call at window close, before the next window's publishers fire.</summary>
         public static void ResetWindow()
@@ -183,14 +186,15 @@ namespace Ranger
             new Dictionary<string, Action>();
 
         // Per-FRAME callback, added when the capstone move surfaced two more couplings that
-        // are neither "append a fragment" nor "raid boundary": SleepingBotAnimatorPatch.
-        // ReadAndReset() (called every Sample(), reads+clears per-frame cull counters before
-        // the window totals below can see them) and GcControl.ApplyConfig()/.Drive()/.Track()
-        // (GC tuning, driven every frame by the sampler loop - Ranger calling OUT to
-        // Framesaver, not Framesaver publishing IN). Both are "do a thing every frame", not
-        // "contribute NDJSON", so a bare Action - no StringBuilder - registered once per mod
-        // and invoked from the sampler's own per-frame Sample(), same call site every one of
-        // these methods already ran from before the move.
+        // are neither "append a fragment" nor "raid boundary". Today's single registrant is
+        // Framesaver's RangerBridge.PerFrame, which runs FrameLevers.PerFrame, GcControl's
+        // ApplyConfig/.Drive()/.Track() (GC tuning, Ranger calling OUT to Framesaver), and
+        // AsyncDrain.PublishAndResetFrame (publishes the drained-this-frame count the
+        // sampler reads back below). (An early version of this comment named
+        // SleepingBotAnimatorPatch.ReadAndReset as a registrant; that empty method was
+        // removed on 2026-08-29.) "Do a thing every frame", not "contribute NDJSON", so a
+        // bare Action - no StringBuilder - registered once per mod and invoked from the
+        // sampler's own per-frame Sample().
         private static readonly Dictionary<string, Action> _perFrameCallbacks =
             new Dictionary<string, Action>();
 

@@ -385,7 +385,7 @@ namespace Ranger.Patches
         /// **Join by containment, never by nearest.** The ordinal is a claim
         /// the containment check can verify. Nearest-start lands on the
         /// neighbouring window exactly at the boundaries where an event matters
-        /// most - the same failure CORPUS records for the PresentMon join.
+        /// most - the same failure the deleted CORPUS corpus records for the PresentMon join.
         ///
         /// `state` is carried so an event with no containing raid window is
         /// EMITTED AND MARKED rather than dropped. A spawn during loading is

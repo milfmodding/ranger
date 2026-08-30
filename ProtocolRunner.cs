@@ -137,7 +137,7 @@ namespace Ranger
 
         /// <summary>Why loading failed, or empty. On the header so a run without a protocol is
         /// distinguishable from a run whose protocol was rejected - those need different fixes.</summary>
-        public static string Failure { get; private set; }
+        private static string Failure { get; set; }
 
         public static string Name { get; private set; }
 
@@ -158,7 +158,7 @@ namespace Ranger
             get { return Steps.Count; }
         }
 
-        public static string Path
+        private static string Path
         {
             get
             {
@@ -174,7 +174,7 @@ namespace Ranger
         /// **No file is not a failure** - most runs have no protocol - so Failure stays empty and Loaded
         /// stays false. A file that exists and does not parse *is* a failure and says so.
         /// </summary>
-        public static void Load()
+        private static void Load()
         {
             Steps.Clear();
             Loaded = false;
@@ -493,6 +493,14 @@ namespace Ranger
         /// config key name, so this is a second reflection pass merged into the same map
         /// rather than a special case.
         /// </summary>
+        // KNOWN COLLISION BEHAVIOR (2026-08-29): the map is keyed by Definition.Key alone -
+        // section-blind, last write wins, with Framesaver's entries added AFTER Ranger's, so a
+        // same-named key across the two plugins resolves to FRAMESAVER's entry. Since Framesaver
+        // commit 9a47371 removed its six shadowing telemetry binds, the only residual collision
+        // is "Enabled" (three live entries: stand-by and both telemetry switches), and which one
+        // a bare `Enabled =` protocol line reaches is reflection order, not design. Protocols
+        // should name keys unambiguously. Keying by Section + Key instead would break existing
+        // protocol INIs - a deliberate breaking change, not an accident to drift into.
         private static Dictionary<string, ConfigEntryBase> BuildEntryMap()
         {
             Dictionary<string, ConfigEntryBase> map =
@@ -533,43 +541,36 @@ namespace Ranger
         {
             value = null;
 
-            try
+            if (type == typeof(bool))
             {
-                if (type == typeof(bool))
-                {
-                    bool b;
-                    if (!bool.TryParse(text, out b)) return false;
-                    value = b;
-                    return true;
-                }
-
-                if (type == typeof(int))
-                {
-                    int i;
-                    if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out i))
-                        return false;
-                    value = i;
-                    return true;
-                }
-
-                if (type == typeof(float))
-                {
-                    float f;
-                    if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out f))
-                        return false;
-                    value = f;
-                    return true;
-                }
-
-                if (type == typeof(string))
-                {
-                    value = text;
-                    return true;
-                }
+                bool b;
+                if (!bool.TryParse(text, out b)) return false;
+                value = b;
+                return true;
             }
-            catch (Exception)
+
+            if (type == typeof(int))
             {
-                return false;
+                int i;
+                if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out i))
+                    return false;
+                value = i;
+                return true;
+            }
+
+            if (type == typeof(float))
+            {
+                float f;
+                if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out f))
+                    return false;
+                value = f;
+                return true;
+            }
+
+            if (type == typeof(string))
+            {
+                value = text;
+                return true;
             }
 
             return false;
