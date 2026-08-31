@@ -353,6 +353,13 @@ namespace Ranger
                 if (_sampling)
                 {
                     Flush(true);
+                    // RAID-END EDGE (wired 2026-08-29): the registered-callback surface had a
+                    // raid-end half whose invoke existed nowhere - RegisterRaidEndCallback was
+                    // public API and a registration could never fire. Menu-return is the same
+                    // transition InvokeRaidStartCallbacks' mirror sits on at raid start (the
+                    // !_sampling block below), so a registered teardown callback runs exactly
+                    // once per raid, after the final flush.
+                    TelemetryBus.InvokeRaidEndCallbacks();
                     _sampling = false;
                     _state = SessionState.Menu;
                 }
@@ -1514,6 +1521,16 @@ namespace Ranger
             StringBuilder windowCallbackSb = new StringBuilder(256);
             TelemetryBus.InvokeWindowCallbacks(windowCallbackSb);
             SpliceRawFields(obj, windowCallbackSb.ToString());
+
+            // The kit's record of EVERYTHING published to the bus this window - every
+            // Count/Event/Sum/Tag from every registered producer, generically, without this
+            // file knowing any producer's field names. This is what makes a publish
+            // load-bearing: a fact written to the bus is recorded here even when no
+            // specific NDJSON block carries it (before 2026-08-29 a publish nobody
+            // specifically read was write-only). Emitted after the window callbacks so
+            // facts published while building fragments land in their own window;
+            // TelemetryBus.ResetWindow at the boundary bounds every value to it.
+            obj["bus"] = TelemetryBus.FactsBlock();
 
             string line = obj.ToString(Formatting.None);
             Append(line);

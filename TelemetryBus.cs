@@ -127,6 +127,26 @@ namespace Ranger
             _tags.Clear();
         }
 
+        /// <summary>
+        /// Every accumulated fact as one JObject - "count":{key:value...}, "event":{...},
+        /// "sum":{...}, "tag":{...}. This is what makes a publish load-bearing: a fact
+        /// written to the bus is recorded in the window's NDJSON without the kit knowing
+        /// any producer's field names. (Before 2026-08-29 a publish whose specific keys
+        /// nobody read was write-only - the failure class that cost Framesaver four
+        /// orphaned publishes and Ranger a silent standbyTransitions regression.) Values
+        /// are window-scoped: the caller emits this before ResetWindow clears at the
+        /// boundary.
+        /// </summary>
+        public static JObject FactsBlock()
+        {
+            var facts = new JObject();
+            facts["count"] = JObject.FromObject(_counts);
+            facts["event"] = JObject.FromObject(_events);
+            facts["sum"] = JObject.FromObject(_sums);
+            facts["tag"] = JObject.FromObject(_tags);
+            return facts;
+        }
+
         // ---- Registered callbacks (2026-08-17, Sophia's design) --------------------------
         //
         // The Count/Event/Sum/Tag surface above solves ONE direction of the boundary:

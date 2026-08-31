@@ -125,3 +125,22 @@ is the verification raid's own job (see `EXTRACTION-PLAN.md`'s 7-point
 criteria list). Treat this table as "what the code says it writes," correct
 as of the commit that lands alongside it, and confirm it against a real log
 before trusting it for a historical-corpus migration.
+
+## The `bus` block (added 2026-08-29)
+
+Every window row also carries a top-level `bus` object - the kit's generic record of
+EVERYTHING published to `TelemetryBus` that window, from every registered producer:
+
+    "bus": {
+        "count": { "<key>": <int>, ... },
+        "event": { "<key>": <number>, ... },
+        "sum":   { "<key>": <number>, ... },
+        "tag":   { "<key>": "<string>", ... }
+    }
+
+Facts already carried in dedicated blocks (e.g. `aiCoreController.tickedSum/liveSum`,
+merged into `agents.*`; `standBy.woken/wokenMs/slept/sleptMs`, merged into
+`standByTransitions`) appear in both places - the dedicated blocks remain
+contractual, `bus` is the generic catch-all that makes ANY publish load-bearing
+without the kit knowing producer field names. Values are window-scoped:
+`TelemetryBus.ResetWindow` clears the dictionaries at the same boundary.
